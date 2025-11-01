@@ -6,6 +6,7 @@ use chrono::{DateTime, Local};
 use clap::Parser;
 use colored::Colorize;
 use csv::Writer;
+use ndarray::Array2;
 use reqwest::{Client, Response};
 use rustc_hash::{FxHashMap, FxHashSet};
 use scraper::{Html, Selector};
@@ -14,6 +15,7 @@ use std::cmp::Ordering;
 use std::convert::TryFrom;
 use std::io::Cursor;
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::fs;
 use tokio::task;
@@ -495,7 +497,9 @@ async fn send_with_retry(client: &Client, url: &str) -> Result<Response> {
         }
     }
 
-    let detail = last_err.map_or_else(|| "unknown error".to_string(), |err| err.to_string());
+    let detail = last_err
+        .as_ref()
+        .map_or_else(|| "unknown error".to_string(), describe_error);
     Err(anyhow!(
         "failed to fetch {url} after {MAX_RETRIES} attempts: {detail}"
     ))
@@ -508,6 +512,27 @@ fn calculate_backoff(attempt: usize) -> Duration {
         .min(MAX_BACKOFF_EXPONENT);
     let seconds = 2_u64.saturating_pow(exponent);
     Duration::from_secs(seconds)
+}
+
+fn describe_error(error: &anyhow::Error) -> String {
+    let mut pieces: Vec<String> = Vec::new();
+    for (idx, cause) in error.chain().enumerate() {
+        let text = cause.to_string();
+        if text.is_empty() {
+            continue;
+        }
+        if idx == 0 {
+            pieces.push(text);
+        } else {
+            pieces.push(format!("caused by {text}"));
+        }
+    }
+
+    if pieces.is_empty() {
+        format!("{error:?}")
+    } else {
+        pieces.join(" | ")
+    }
 }
 
 #[derive(Debug)]
@@ -523,14 +548,12 @@ fn aggregate_entries(entries: Vec<RawEntry>) -> Vec<RankingEntry> {
     let mut aggregated: FxHashMap<String, AggregatedEntry> = FxHashMap::default();
 
     for entry in entries {
-        let normalized = alias_map
-            .get(entry.lang.trim())
-            .cloned()
-            .unwrap_or_else(|| entry.lang.trim().to_string());
+        let trimmed = entry.lang.trim();
+        let normalized = alias_map.get(trimmed).copied().unwrap_or(trimmed);
         if normalized.is_empty() {
             continue;
         }
-        let agg = aggregated.entry(normalized).or_default();
+        let agg = aggregated.entry(normalized.to_owned()).or_default();
         agg.share_sum += entry.share;
         if let Some(rank) = entry.rank {
             agg.min_rank = Some(match agg.min_rank {
@@ -563,16 +586,10 @@ fn aggregate_entries(entries: Vec<RawEntry>) -> Vec<RankingEntry> {
 }
 
 fn adjust_pypl_entries(tiobe: &[RankingEntry], pypl: &mut Vec<RankingEntry>) {
-    let tiobe_map: FxHashMap<String, RankingEntry> = tiobe
-        .iter()
-        .cloned()
-        .map(|entry| (entry.lang.clone(), entry))
-        .collect();
-
-    let Some(c_data) = tiobe_map.get("C") else {
+    let Some(c_data) = tiobe.iter().find(|entry| entry.lang == "C") else {
         return;
     };
-    let Some(cpp_data) = tiobe_map.get("C++") else {
+    let Some(cpp_data) = tiobe.iter().find(|entry| entry.lang == "C++") else {
         return;
     };
     let Some(position) = pypl.iter().position(|entry| entry.lang == "C/C++") else {
@@ -622,21 +639,22 @@ struct CsvRecord {
     trend: Option<f64>,
 }
 
-fn language_aliases() -> FxHashMap<String, String> {
-    let pairs = [
-        ("Delphi/Object Pascal", "Delphi/Pascal"),
-        ("MATLAB", "Matlab"),
-        ("Cobol", "COBOL"),
-        ("Powershell", "PowerShell"),
-        ("VBScript", "VBA/VBS"),
-        ("VBA", "VBA/VBS"),
-        ("ABAP", "Abap"),
-        ("(Visual) FoxPro", "FoxPro"),
-    ];
-    pairs
+fn language_aliases() -> &'static FxHashMap<&'static str, &'static str> {
+    static LANGUAGE_ALIASES: OnceLock<FxHashMap<&'static str, &'static str>> = OnceLock::new();
+    LANGUAGE_ALIASES.get_or_init(|| {
+        [
+            ("Delphi/Object Pascal", "Delphi/Pascal"),
+            ("MATLAB", "Matlab"),
+            ("Cobol", "COBOL"),
+            ("Powershell", "PowerShell"),
+            ("VBScript", "VBA/VBS"),
+            ("VBA", "VBA/VBS"),
+            ("ABAP", "Abap"),
+            ("(Visual) FoxPro", "FoxPro"),
+        ]
         .into_iter()
-        .map(|(from, to)| (from.to_string(), to.to_string()))
         .collect()
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -685,25 +703,19 @@ fn compute_schulze_records(
     pypl: &[RankingEntry],
     benchmark: &FxHashMap<String, f64>,
 ) -> Result<Vec<SchulzeRecord>> {
-    let tiobe_map: FxHashMap<String, RankingEntry> = tiobe
+    let tiobe_index: FxHashMap<&str, usize> = tiobe
         .iter()
-        .cloned()
-        .map(|entry| (entry.lang.clone(), entry))
+        .enumerate()
+        .map(|(idx, entry)| (entry.lang.as_str(), idx))
         .collect();
-    let mut pypl_map: FxHashMap<String, RankingEntry> = pypl
+    let pypl_index: FxHashMap<&str, usize> = pypl
         .iter()
-        .cloned()
-        .map(|entry| (entry.lang.clone(), entry))
+        .enumerate()
+        .map(|(idx, entry)| (entry.lang.as_str(), idx))
         .collect();
 
-    if let Some(value) = pypl_map.get("C/C++").cloned() {
-        pypl_map.remove("C/C++");
-        pypl_map.entry("C".to_string()).or_insert(value.clone());
-        pypl_map.entry("C++".to_string()).or_insert(value);
-    }
-
-    let tiobe_set: FxHashSet<String> = tiobe_map.keys().cloned().collect();
-    let pypl_set: FxHashSet<String> = pypl_map.keys().cloned().collect();
+    let tiobe_set: FxHashSet<String> = tiobe.iter().map(|entry| entry.lang.clone()).collect();
+    let pypl_set: FxHashSet<String> = pypl.iter().map(|entry| entry.lang.clone()).collect();
     let bench_set: FxHashSet<String> = benchmark.keys().cloned().collect();
 
     let mut languages: Vec<String> = tiobe_set
@@ -722,9 +734,9 @@ fn compute_schulze_records(
     languages.sort();
 
     let mut tiobe_order = languages.clone();
-    tiobe_order.sort_by(|a, b| compare_descending(&tiobe_map, a, b));
+    tiobe_order.sort_by(|a, b| compare_descending(tiobe, &tiobe_index, a.as_str(), b.as_str()));
     let mut pypl_order = languages.clone();
-    pypl_order.sort_by(|a, b| compare_descending(&pypl_map, a, b));
+    pypl_order.sort_by(|a, b| compare_descending(pypl, &pypl_index, a.as_str(), b.as_str()));
     let mut performance_order = languages.clone();
     performance_order.sort_by(|a, b| compare_ascending(benchmark, a, b));
 
@@ -741,12 +753,26 @@ fn compute_schulze_records(
     ranked.sort_by(|a, b| {
         let i_a = index_map[a.as_str()];
         let i_b = index_map[b.as_str()];
-        match p[i_a][i_b].cmp(&p[i_b][i_a]) {
+        match p[[i_a, i_b]].cmp(&p[[i_b, i_a]]) {
             Ordering::Greater => Ordering::Less,
             Ordering::Less => Ordering::Greater,
             Ordering::Equal => {
-                let score_a = combined_score(a, &tiobe_map, &pypl_map, benchmark);
-                let score_b = combined_score(b, &tiobe_map, &pypl_map, benchmark);
+                let score_a = combined_score(
+                    a.as_str(),
+                    tiobe,
+                    &tiobe_index,
+                    pypl,
+                    &pypl_index,
+                    benchmark,
+                );
+                let score_b = combined_score(
+                    b.as_str(),
+                    tiobe,
+                    &tiobe_index,
+                    pypl,
+                    &pypl_index,
+                    benchmark,
+                );
                 match score_b.partial_cmp(&score_a).unwrap_or(Ordering::Equal) {
                     Ordering::Equal => a.cmp(b),
                     other => other,
@@ -755,18 +781,20 @@ fn compute_schulze_records(
         }
     });
 
-    let mut records = Vec::new();
+    let mut records = Vec::with_capacity(languages.len());
     for (position, lang) in ranked.iter().enumerate() {
         let idx = index_map[lang.as_str()];
         let wins = (0..languages.len())
-            .filter(|&other| other != idx && p[idx][other] > p[other][idx])
+            .filter(|&other| other != idx && p[[idx, other]] > p[[other, idx]])
             .count();
 
-        let tiobe_entry = tiobe_map
-            .get(lang)
+        let tiobe_entry = tiobe_index
+            .get(lang.as_str())
+            .and_then(|&entry_idx| tiobe.get(entry_idx))
             .ok_or_else(|| anyhow!("missing TIOBE data for {lang}"))?;
-        let pypl_entry = pypl_map
-            .get(lang)
+        let pypl_entry = pypl_index
+            .get(lang.as_str())
+            .and_then(|&entry_idx| pypl.get(entry_idx))
             .ok_or_else(|| anyhow!("missing PYPL data for {lang}"))?;
         let bench_value = benchmark
             .get(lang)
@@ -790,9 +818,20 @@ fn compute_schulze_records(
     Ok(records)
 }
 
-fn compare_descending(map: &FxHashMap<String, RankingEntry>, a: &str, b: &str) -> Ordering {
-    let a_share = map.get(a).map_or(0.0, |entry| entry.share);
-    let b_share = map.get(b).map_or(0.0, |entry| entry.share);
+fn compare_descending(
+    entries: &[RankingEntry],
+    index_map: &FxHashMap<&str, usize>,
+    a: &str,
+    b: &str,
+) -> Ordering {
+    let share_for = |lang: &str| {
+        index_map
+            .get(lang)
+            .and_then(|&idx| entries.get(idx))
+            .map_or(0.0, |entry| entry.share)
+    };
+    let a_share = share_for(a);
+    let b_share = share_for(b);
     b_share
         .partial_cmp(&a_share)
         .unwrap_or(Ordering::Equal)
@@ -811,7 +850,7 @@ fn compare_ascending(map: &FxHashMap<String, f64>, a: &str, b: &str) -> Ordering
 fn build_preference_matrices(
     languages: &[String],
     ballots: &[Vec<String>],
-) -> (Vec<Vec<usize>>, Vec<Vec<usize>>) {
+) -> (Array2<usize>, Array2<usize>) {
     let n = languages.len();
     let index_map: FxHashMap<&str, usize> = languages
         .iter()
@@ -819,7 +858,7 @@ fn build_preference_matrices(
         .map(|(idx, lang)| (lang.as_str(), idx))
         .collect();
 
-    let mut d = vec![vec![0usize; n]; n];
+    let mut d = Array2::<usize>::zeros((n, n));
     for ballot in ballots {
         let mut positions = vec![0usize; n];
         for (pos, lang) in ballot.iter().enumerate() {
@@ -830,20 +869,20 @@ fn build_preference_matrices(
         for i in 0..n {
             for j in 0..n {
                 if i != j && positions[i] < positions[j] {
-                    d[i][j] += 1;
+                    d[[i, j]] += 1;
                 }
             }
         }
     }
 
-    let mut p = vec![vec![0usize; n]; n];
+    let mut p = Array2::<usize>::zeros((n, n));
     for i in 0..n {
         for j in 0..n {
             if i == j {
                 continue;
             }
-            if d[i][j] > d[j][i] {
-                p[i][j] = d[i][j];
+            if d[[i, j]] > d[[j, i]] {
+                p[[i, j]] = d[[i, j]];
             }
         }
     }
@@ -857,9 +896,9 @@ fn build_preference_matrices(
                 if i == k || j == k {
                     continue;
                 }
-                let candidate = p[j][i].min(p[i][k]);
-                if candidate > p[j][k] {
-                    p[j][k] = candidate;
+                let candidate = p[[j, i]].min(p[[i, k]]);
+                if candidate > p[[j, k]] {
+                    p[[j, k]] = candidate;
                 }
             }
         }
@@ -870,12 +909,20 @@ fn build_preference_matrices(
 
 fn combined_score(
     lang: &str,
-    tiobe: &FxHashMap<String, RankingEntry>,
-    pypl: &FxHashMap<String, RankingEntry>,
+    tiobe: &[RankingEntry],
+    tiobe_index: &FxHashMap<&str, usize>,
+    pypl: &[RankingEntry],
+    pypl_index: &FxHashMap<&str, usize>,
     benchmark: &FxHashMap<String, f64>,
 ) -> f64 {
-    let tiobe_share = tiobe.get(lang).map_or(0.0, |entry| entry.share);
-    let pypl_share = pypl.get(lang).map_or(0.0, |entry| entry.share);
+    let share_from = |index: &FxHashMap<&str, usize>, entries: &[RankingEntry]| {
+        index
+            .get(lang)
+            .and_then(|&idx| entries.get(idx))
+            .map_or(0.0, |entry| entry.share)
+    };
+    let tiobe_share = share_from(tiobe_index, tiobe);
+    let pypl_share = share_from(pypl_index, pypl);
     let perf = benchmark.get(lang).copied().unwrap_or(f64::INFINITY);
     let perf_component = if perf > 0.0 && perf.is_finite() {
         1.0 / perf
@@ -957,7 +1004,7 @@ fn compute_benchmark_stats_sync(data: &[u8]) -> Result<FxHashMap<String, f64>> {
         if !elapsed.is_finite() || elapsed <= 0.0 {
             continue;
         }
-        if let Some(canonical) = canonical_benchmark_lang(&lang, &alias_map) {
+        if let Some(canonical) = canonical_benchmark_lang(&lang, alias_map) {
             if canonical.is_empty() {
                 continue;
             }
@@ -967,15 +1014,23 @@ fn compute_benchmark_stats_sync(data: &[u8]) -> Result<FxHashMap<String, f64>> {
 
     let mut medians: FxHashMap<String, f64> = FxHashMap::default();
     for (lang, mut values) in per_lang {
-        if values.is_empty() {
+        let len = values.len();
+        if len == 0 {
             continue;
         }
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-        let median = if values.len() % 2 == 1 {
-            values[values.len() / 2]
+        let median = if len % 2 == 1 {
+            let mid = len / 2;
+            let (_, median, _) = values.select_nth_unstable_by(mid, f64::total_cmp);
+            *median
         } else {
-            let mid = values.len() / 2;
-            f64::midpoint(values[mid - 1], values[mid])
+            let mid = len / 2;
+            let (lower_part, upper, _) = values.select_nth_unstable_by(mid, f64::total_cmp);
+            let lower = lower_part
+                .iter()
+                .copied()
+                .max_by(f64::total_cmp)
+                .unwrap_or(*upper);
+            f64::midpoint(lower, *upper)
         };
         if median.is_finite() {
             medians.insert(lang, median);
@@ -1004,49 +1059,52 @@ fn canonical_benchmark_lang(
     Some(capitalize_word(&key))
 }
 
-fn benchmark_aliases() -> FxHashMap<&'static str, &'static str> {
-    [
-        ("chapel", "Chapel"),
-        ("clang", "C/C++"),
-        ("csharpaot", "C#"),
-        ("csharpcore", "C#"),
-        ("dartexe", "Dart"),
-        ("dartjit", "Dart"),
-        ("erlang", "Erlang"),
-        ("fpascal", "Free Pascal"),
-        ("fsharpcore", "F#"),
-        ("gcc", "C/C++"),
-        ("ghc", "Haskell"),
-        ("gnat", "Ada"),
-        ("go", "Go"),
-        ("gpp", "C/C++"),
-        ("graalvm", "Graal"),
-        ("icx", "C/C++"),
-        ("ifc", "Fortran"),
-        ("ifx", "Fortran"),
-        ("java", "Java"),
-        ("javaxint", "Java"),
-        ("julia", "Julia"),
-        ("lua", "Lua"),
-        ("micropython", "Python"),
-        ("mri", "Ruby"),
-        ("node", "JavaScript"),
-        ("ocaml", "OCaml"),
-        ("openj9", "Java"),
-        ("perl", "Perl"),
-        ("pharo", "Smalltalk"),
-        ("php", "PHP"),
-        ("python3", "Python"),
-        ("racket", "Racket"),
-        ("ruby", "Ruby"),
-        ("rust", "Rust"),
-        ("sbcl", "Lisp"),
-        ("swift", "Swift"),
-        ("toit", "Toit"),
-        ("vw", ""),
-    ]
-    .into_iter()
-    .collect()
+fn benchmark_aliases() -> &'static FxHashMap<&'static str, &'static str> {
+    static BENCHMARK_ALIASES: OnceLock<FxHashMap<&'static str, &'static str>> = OnceLock::new();
+    BENCHMARK_ALIASES.get_or_init(|| {
+        [
+            ("chapel", "Chapel"),
+            ("clang", "C/C++"),
+            ("csharpaot", "C#"),
+            ("csharpcore", "C#"),
+            ("dartexe", "Dart"),
+            ("dartjit", "Dart"),
+            ("erlang", "Erlang"),
+            ("fpascal", "Free Pascal"),
+            ("fsharpcore", "F#"),
+            ("gcc", "C/C++"),
+            ("ghc", "Haskell"),
+            ("gnat", "Ada"),
+            ("go", "Go"),
+            ("gpp", "C/C++"),
+            ("graalvm", "Graal"),
+            ("icx", "C/C++"),
+            ("ifc", "Fortran"),
+            ("ifx", "Fortran"),
+            ("java", "Java"),
+            ("javaxint", "Java"),
+            ("julia", "Julia"),
+            ("lua", "Lua"),
+            ("micropython", "Python"),
+            ("mri", "Ruby"),
+            ("node", "JavaScript"),
+            ("ocaml", "OCaml"),
+            ("openj9", "Java"),
+            ("perl", "Perl"),
+            ("pharo", "Smalltalk"),
+            ("php", "PHP"),
+            ("python3", "Python"),
+            ("racket", "Racket"),
+            ("ruby", "Ruby"),
+            ("rust", "Rust"),
+            ("sbcl", "Lisp"),
+            ("swift", "Swift"),
+            ("toit", "Toit"),
+            ("vw", ""),
+        ]
+        .into_iter()
+        .collect()
+    })
 }
 
 fn capitalize_word(input: &str) -> String {
