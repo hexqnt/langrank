@@ -1,13 +1,15 @@
 #![warn(clippy::pedantic)]
 
 use crate::cli::Cli;
-use crate::sources::{download_benchmark_data, fetch_pypl, fetch_tiobe, fetch_languish, load_benchmark_stats};
+use crate::sources::{
+    download_benchmark_data, fetch_languish, fetch_pypl, fetch_tiobe, load_benchmark_stats,
+};
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Local};
 use clap::Parser;
 use colored::Colorize;
 use csv::Writer;
-use ndarray::Array2;
+use ndarray::{Array2, Zip};
 use reqwest::Client;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
@@ -209,7 +211,18 @@ fn print_schulze_table(records: &[SchulzeRecord], full_output: bool) {
 fn print_full_schulze_table(records: &[SchulzeRecord]) {
     let header = format!(
         "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>7} | {:>8} | {:>4}",
-        "Pos", "Language", "T Rank", "T%", "T Trend", "P Rank", "P%", "P Trend", "L%", "L Trend", "Perf(s)", "Wins"
+        "Pos",
+        "Language",
+        "T Rank",
+        "T%",
+        "T Trend",
+        "P Rank",
+        "P%",
+        "P Trend",
+        "L%",
+        "L Trend",
+        "Perf(s)",
+        "Wins"
     );
     println!("{}", header.bold().bright_white());
     println!(
@@ -549,8 +562,7 @@ fn collect_languages(
 ) -> Result<Vec<String>> {
     let tiobe_set: FxHashSet<String> = tiobe.iter().map(|entry| entry.lang.clone()).collect();
     let pypl_set: FxHashSet<String> = pypl.iter().map(|entry| entry.lang.clone()).collect();
-    let languish_set: FxHashSet<String> =
-        languish.iter().map(|entry| entry.lang.clone()).collect();
+    let languish_set: FxHashSet<String> = languish.iter().map(|entry| entry.lang.clone()).collect();
     let bench_set: FxHashSet<String> = benchmark.keys().cloned().collect();
 
     let mut languages: Vec<String> = tiobe_set
@@ -668,16 +680,14 @@ fn build_preference_matrices(
     }
 
     let mut p = Array2::<usize>::zeros((n, n));
-    for i in 0..n {
-        for j in 0..n {
-            if i == j {
-                continue;
+    Zip::from(&mut p)
+        .and(&d)
+        .and(&d.t())
+        .for_each(|p_cell, &d_ij, &d_ji| {
+            if d_ij > d_ji {
+                *p_cell = d_ij;
             }
-            if d[[i, j]] > d[[j, i]] {
-                p[[i, j]] = d[[i, j]];
-            }
-        }
-    }
+        });
 
     for i in 0..n {
         for j in 0..n {
