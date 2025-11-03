@@ -1,7 +1,7 @@
 #![warn(clippy::pedantic)]
 
 use crate::cli::Cli;
-use crate::sources::{download_benchmark_data, fetch_pypl, fetch_tiobe, load_benchmark_stats};
+use crate::sources::{download_benchmark_data, fetch_pypl, fetch_tiobe, fetch_languish, load_benchmark_stats};
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Local};
 use clap::Parser;
@@ -56,9 +56,10 @@ async fn main() -> Result<()> {
         .build()
         .context("failed to build HTTP client")?;
 
-    let (tiobe, mut pypl, bench_bytes) = tokio::try_join!(
+    let (tiobe, mut pypl, languish, bench_bytes) = tokio::try_join!(
         fetch_tiobe(&client),
         fetch_pypl(&client),
+        fetch_languish(&client),
         download_benchmark_data(&client)
     )?;
 
@@ -68,7 +69,11 @@ async fn main() -> Result<()> {
     if let Some(path) = save_rankings.as_ref() {
         save_rankings_csv(
             path.as_path(),
-            &[(SourceKind::Tiobe, &tiobe), (SourceKind::Pypl, &pypl)],
+            &[
+                (SourceKind::Tiobe, &tiobe),
+                (SourceKind::Pypl, &pypl),
+                (SourceKind::Languish, &languish),
+            ],
         )
         .await?;
     }
@@ -79,7 +84,7 @@ async fn main() -> Result<()> {
 
     let benchmark_stats = load_benchmark_stats(&bench_bytes).await?;
     let benchmark_lang_count = benchmark_stats.len();
-    let schulze_records = compute_schulze_records(&tiobe, &pypl, &benchmark_stats)?;
+    let schulze_records = compute_schulze_records(&tiobe, &pypl, &languish, &benchmark_stats)?;
     if let Some(path) = save_schulze.as_ref() {
         save_schulze_csv(&schulze_records, path.as_path()).await?;
     }
@@ -87,6 +92,7 @@ async fn main() -> Result<()> {
     print_summary(&SummaryContext {
         tiobe_count: tiobe.len(),
         pypl_count: pypl_original_len,
+        languish_count: languish.len(),
         benchmark_lang_count,
         run_started_at: &run_started_at,
         paths: SummaryPaths {
@@ -110,6 +116,7 @@ struct SummaryPaths<'a> {
 struct SummaryContext<'a> {
     tiobe_count: usize,
     pypl_count: usize,
+    languish_count: usize,
     benchmark_lang_count: usize,
     run_started_at: &'a DateTime<Local>,
     paths: SummaryPaths<'a>,
@@ -147,10 +154,11 @@ fn print_summary_header(context: &SummaryContext<'_>) {
             .bright_white()
     );
     println!(
-        "{} {} | {} | {}",
+        "{} {} | {} | {} | {}",
         "Sources".bright_yellow().bold(),
         format!("TIOBE: {}", context.tiobe_count).bright_white(),
         format!("PYPL: {}", context.pypl_count).bright_white(),
+        format!("Languish: {}", context.languish_count).bright_white(),
         format!("Benchmarks: {}", context.benchmark_lang_count).bright_white()
     );
 }
@@ -200,13 +208,13 @@ fn print_schulze_table(records: &[SchulzeRecord], full_output: bool) {
 
 fn print_full_schulze_table(records: &[SchulzeRecord]) {
     let header = format!(
-        "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>8} | {:>4}",
-        "Pos", "Language", "T Rank", "T%", "T Trend", "P Rank", "P%", "P Trend", "Perf(s)", "Wins"
+        "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>7} | {:>8} | {:>4}",
+        "Pos", "Language", "T Rank", "T%", "T Trend", "P Rank", "P%", "P Trend", "L%", "L Trend", "Perf(s)", "Wins"
     );
     println!("{}", header.bold().bright_white());
     println!(
         "{}",
-        "----+---------------+--------+--------+---------+--------+--------+---------+--------+------"
+        "----+---------------+--------+--------+---------+--------+--------+---------+--------+---------+--------+------"
             .bright_black()
     );
 
@@ -221,9 +229,11 @@ fn print_full_schulze_table(records: &[SchulzeRecord]) {
         let pypl_share = format!("{:.2}", record.pypl_share);
         let tiobe_trend = format_trend(record.tiobe_trend);
         let pypl_trend = format_trend(record.pypl_trend);
+        let languish_share = format!("{:.2}", record.languish_share);
+        let languish_trend = format_trend(record.languish_trend);
         let perf = format!("{:.2}", record.benchmark_elapsed);
         let line = format!(
-            "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>8} | {:>4}",
+            "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>7} | {:>8} | {:>4}",
             record.position,
             record.lang,
             tiobe_rank,
@@ -232,6 +242,8 @@ fn print_full_schulze_table(records: &[SchulzeRecord]) {
             pypl_rank,
             pypl_share,
             pypl_trend,
+            languish_share,
+            languish_trend,
             perf,
             record.schulze_wins
         );
@@ -242,22 +254,23 @@ fn print_full_schulze_table(records: &[SchulzeRecord]) {
 fn print_compact_schulze_table(records: &[SchulzeRecord]) {
     println!(
         "{}",
-        "Pos | Language      | TIOBE% | PYPL% | Perf(s) | Wins"
+        "Pos | Language      | TIOBE% | PYPL% | LANG% | Perf(s) | Wins"
             .to_string()
             .bold()
             .bright_white()
     );
     println!(
         "{}",
-        "----+---------------+--------+-------+---------+------".bright_black()
+        "----+---------------+--------+-------+------+---------+------".bright_black()
     );
     for record in records.iter().take(10) {
         let line = format!(
-            "{:>3} | {:<13} | {:>6.2} | {:>5.2} | {:>7.2} | {:>4}",
+            "{:>3} | {:<13} | {:>6.2} | {:>5.2} | {:>5.2} | {:>7.2} | {:>4}",
             record.position,
             record.lang,
             record.tiobe_share,
             record.pypl_share,
+            record.languish_share,
             record.benchmark_elapsed,
             record.schulze_wins
         );
@@ -379,6 +392,7 @@ fn adjust_pypl_entries(tiobe: &[RankingEntry], pypl: &mut Vec<RankingEntry>) {
 enum SourceKind {
     Tiobe,
     Pypl,
+    Languish,
 }
 
 #[derive(Debug, Serialize)]
@@ -400,6 +414,9 @@ struct SchulzeRecord {
     pypl_rank: Option<u32>,
     pypl_share: f64,
     pypl_trend: Option<f64>,
+    languish_rank: Option<u32>,
+    languish_share: f64,
+    languish_trend: Option<f64>,
     benchmark_elapsed: f64,
     schulze_wins: usize,
 }
@@ -418,10 +435,12 @@ async fn save_schulze_csv(records: &[SchulzeRecord], output_path: &Path) -> Resu
 fn compute_schulze_records(
     tiobe: &[RankingEntry],
     pypl: &[RankingEntry],
+    languish: &[RankingEntry],
     benchmark: &FxHashMap<String, f64>,
 ) -> Result<Vec<SchulzeRecord>> {
     let tiobe_index = build_ranking_index(tiobe);
     let pypl_index = build_ranking_index(pypl);
+    let languish_index = build_ranking_index(languish);
     let sources = RankingSources {
         tiobe: RankingSource {
             entries: tiobe,
@@ -431,9 +450,13 @@ fn compute_schulze_records(
             entries: pypl,
             index: &pypl_index,
         },
+        languish: RankingSource {
+            entries: languish,
+            index: &languish_index,
+        },
         benchmark,
     };
-    let languages = collect_languages(tiobe, pypl, benchmark)?;
+    let languages = collect_languages(tiobe, pypl, languish, benchmark)?;
     let ballots = build_ballots(&languages, &sources);
     let (_d, p) = build_preference_matrices(&languages, &ballots);
     let index_map = build_language_index(&languages);
@@ -454,6 +477,10 @@ fn compute_schulze_records(
             .pypl
             .entry(lang)
             .ok_or_else(|| anyhow!("missing PYPL data for {lang}"))?;
+        let languish_entry = sources
+            .languish
+            .entry(lang)
+            .ok_or_else(|| anyhow!("missing Languish data for {lang}"))?;
         let bench_value = sources
             .benchmark_value(lang)
             .ok_or_else(|| anyhow!("missing benchmark data for {lang}"))?;
@@ -467,6 +494,9 @@ fn compute_schulze_records(
             pypl_rank: pypl_entry.rank,
             pypl_share: pypl_entry.share,
             pypl_trend: pypl_entry.trend,
+            languish_rank: languish_entry.rank,
+            languish_share: languish_entry.share,
+            languish_trend: languish_entry.trend,
             benchmark_elapsed: bench_value,
             schulze_wins: wins,
         });
@@ -493,6 +523,7 @@ impl<'a> RankingSource<'a> {
 struct RankingSources<'a> {
     tiobe: RankingSource<'a>,
     pypl: RankingSource<'a>,
+    languish: RankingSource<'a>,
     benchmark: &'a FxHashMap<String, f64>,
 }
 
@@ -513,14 +544,18 @@ fn build_ranking_index(entries: &[RankingEntry]) -> FxHashMap<&str, usize> {
 fn collect_languages(
     tiobe: &[RankingEntry],
     pypl: &[RankingEntry],
+    languish: &[RankingEntry],
     benchmark: &FxHashMap<String, f64>,
 ) -> Result<Vec<String>> {
     let tiobe_set: FxHashSet<String> = tiobe.iter().map(|entry| entry.lang.clone()).collect();
     let pypl_set: FxHashSet<String> = pypl.iter().map(|entry| entry.lang.clone()).collect();
+    let languish_set: FxHashSet<String> =
+        languish.iter().map(|entry| entry.lang.clone()).collect();
     let bench_set: FxHashSet<String> = benchmark.keys().cloned().collect();
 
     let mut languages: Vec<String> = tiobe_set
         .intersection(&pypl_set)
+        .filter(|lang| languish_set.contains(*lang))
         .filter(|lang| bench_set.contains(*lang))
         .cloned()
         .collect();
@@ -543,10 +578,13 @@ fn build_ballots(languages: &[String], sources: &RankingSources<'_>) -> Vec<Vec<
     let mut pypl_order = languages.to_vec();
     pypl_order.sort_by(|a, b| compare_by_share(a.as_str(), b.as_str(), &sources.pypl));
 
+    let mut languish_order = languages.to_vec();
+    languish_order.sort_by(|a, b| compare_by_share(a.as_str(), b.as_str(), &sources.languish));
+
     let mut performance_order = languages.to_vec();
     performance_order.sort_by(|a, b| compare_ascending(sources.benchmark, a, b));
 
-    vec![tiobe_order, pypl_order, performance_order]
+    vec![tiobe_order, pypl_order, languish_order, performance_order]
 }
 
 fn build_language_index(languages: &[String]) -> FxHashMap<&str, usize> {
@@ -664,11 +702,12 @@ fn build_preference_matrices(
 fn combined_score(lang: &str, sources: &RankingSources<'_>) -> f64 {
     let tiobe_share = sources.tiobe.share(lang);
     let pypl_share = sources.pypl.share(lang);
+    let languish_share = sources.languish.share(lang);
     let perf = sources.benchmark_value(lang).unwrap_or(f64::INFINITY);
     let perf_component = if perf > 0.0 && perf.is_finite() {
         1.0 / perf
     } else {
         0.0
     };
-    tiobe_share + pypl_share + perf_component
+    tiobe_share + pypl_share + languish_share + perf_component
 }
