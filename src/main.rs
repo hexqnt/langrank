@@ -1,5 +1,3 @@
-#![warn(clippy::pedantic)]
-
 use crate::cli::Cli;
 use crate::sources::{
     download_benchmark_data, fetch_languish, fetch_pypl, fetch_tiobe, load_benchmark_stats,
@@ -84,7 +82,7 @@ async fn main() -> Result<()> {
         save_benchmarks_csv(&bench_bytes, path.as_path()).await?;
     }
 
-    let benchmark_stats = load_benchmark_stats(&bench_bytes).await?;
+    let benchmark_stats = load_benchmark_stats(bench_bytes).await?;
     let benchmark_lang_count = benchmark_stats.len();
     let schulze_records = compute_schulze_records(&tiobe, &pypl, &languish, &benchmark_stats)?;
     if let Some(path) = save_schulze.as_ref() {
@@ -306,13 +304,13 @@ async fn save_benchmarks_csv(bytes: &[u8], path: &Path) -> Result<()> {
 }
 
 fn format_trend(trend: Option<f64>) -> String {
-    match trend {
-        Some(value) => {
+    trend.map_or_else(
+        || "-".to_string(),
+        |value| {
             let normalized = if value.abs() < 0.005 { 0.0 } else { value };
             format!("{normalized:+.2}")
-        }
-        None => "-".to_string(),
-    }
+        },
+    )
 }
 
 async fn write_output_file(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -349,7 +347,7 @@ fn serialize_rankings(sources: &[(SourceKind, &[RankingEntry])]) -> Result<Vec<u
         for entry in *entries {
             let record = CsvRecord {
                 source: *source,
-                lang: entry.lang.clone(),
+                lang: entry.lang.as_str(),
                 rank: entry.rank,
                 share: entry.share,
                 trend: entry.trend,
@@ -409,9 +407,9 @@ enum SourceKind {
 }
 
 #[derive(Debug, Serialize)]
-struct CsvRecord {
+struct CsvRecord<'a> {
     source: SourceKind,
-    lang: String,
+    lang: &'a str,
     rank: Option<u32>,
     share: f64,
     trend: Option<f64>,
@@ -560,16 +558,15 @@ fn collect_languages(
     languish: &[RankingEntry],
     benchmark: &FxHashMap<String, f64>,
 ) -> Result<Vec<String>> {
-    let tiobe_set: FxHashSet<String> = tiobe.iter().map(|entry| entry.lang.clone()).collect();
-    let pypl_set: FxHashSet<String> = pypl.iter().map(|entry| entry.lang.clone()).collect();
-    let languish_set: FxHashSet<String> = languish.iter().map(|entry| entry.lang.clone()).collect();
-    let bench_set: FxHashSet<String> = benchmark.keys().cloned().collect();
+    let tiobe_set: FxHashSet<&str> = tiobe.iter().map(|entry| entry.lang.as_str()).collect();
+    let pypl_set: FxHashSet<&str> = pypl.iter().map(|entry| entry.lang.as_str()).collect();
+    let languish_set: FxHashSet<&str> = languish.iter().map(|entry| entry.lang.as_str()).collect();
+    let bench_set: FxHashSet<&str> = benchmark.keys().map(String::as_str).collect();
 
     let mut languages: Vec<String> = tiobe_set
         .intersection(&pypl_set)
-        .filter(|lang| languish_set.contains(*lang))
-        .filter(|lang| bench_set.contains(*lang))
-        .cloned()
+        .filter(|&&lang| languish_set.contains(lang) && bench_set.contains(lang))
+        .map(|&lang| lang.to_string())
         .collect();
 
     if languages.len() < 2 {
@@ -584,19 +581,43 @@ fn collect_languages(
 }
 
 fn build_ballots(languages: &[String], sources: &RankingSources<'_>) -> Vec<Vec<String>> {
-    let mut tiobe_order = languages.to_vec();
-    tiobe_order.sort_by(|a, b| compare_by_share(a.as_str(), b.as_str(), &sources.tiobe));
-
-    let mut pypl_order = languages.to_vec();
-    pypl_order.sort_by(|a, b| compare_by_share(a.as_str(), b.as_str(), &sources.pypl));
-
-    let mut languish_order = languages.to_vec();
-    languish_order.sort_by(|a, b| compare_by_share(a.as_str(), b.as_str(), &sources.languish));
-
-    let mut performance_order = languages.to_vec();
-    performance_order.sort_by(|a, b| compare_ascending(sources.benchmark, a, b));
+    let tiobe_order = order_by_metric(languages, |lang| sources.tiobe.share(lang), false);
+    let pypl_order = order_by_metric(languages, |lang| sources.pypl.share(lang), false);
+    let languish_order = order_by_metric(languages, |lang| sources.languish.share(lang), false);
+    let performance_order = order_by_metric(
+        languages,
+        |lang| {
+            sources
+                .benchmark
+                .get(lang)
+                .copied()
+                .unwrap_or(f64::INFINITY)
+        },
+        true,
+    );
 
     vec![tiobe_order, pypl_order, languish_order, performance_order]
+}
+
+fn order_by_metric<F>(languages: &[String], metric: F, ascending: bool) -> Vec<String>
+where
+    F: Fn(&str) -> f64,
+{
+    let mut scored = Vec::with_capacity(languages.len());
+    for (idx, lang) in languages.iter().enumerate() {
+        scored.push((idx, metric(lang.as_str())));
+    }
+    scored.sort_by(|(idx_a, score_a), (idx_b, score_b)| {
+        let mut ord = score_a.partial_cmp(score_b).unwrap_or(Ordering::Equal);
+        if !ascending {
+            ord = ord.reverse();
+        }
+        ord.then_with(|| languages[*idx_a].cmp(&languages[*idx_b]))
+    });
+    scored
+        .into_iter()
+        .map(|(idx, _)| languages[idx].clone())
+        .collect()
 }
 
 fn build_language_index(languages: &[String]) -> FxHashMap<&str, usize> {
@@ -613,6 +634,10 @@ fn rank_languages(
     index_map: &FxHashMap<&str, usize>,
     sources: &RankingSources<'_>,
 ) -> Vec<String> {
+    let combined_scores: Vec<f64> = languages
+        .iter()
+        .map(|lang| combined_score(lang.as_str(), sources))
+        .collect();
     let mut ranked = languages.to_vec();
     ranked.sort_by(|a, b| {
         let i_a = index_map[a.as_str()];
@@ -621,8 +646,8 @@ fn rank_languages(
             Ordering::Greater => Ordering::Less,
             Ordering::Less => Ordering::Greater,
             Ordering::Equal => {
-                let score_a = combined_score(a.as_str(), sources);
-                let score_b = combined_score(b.as_str(), sources);
+                let score_a = combined_scores[i_a];
+                let score_b = combined_scores[i_b];
                 match score_b.partial_cmp(&score_a).unwrap_or(Ordering::Equal) {
                     Ordering::Equal => a.cmp(b),
                     other => other,
@@ -631,24 +656,6 @@ fn rank_languages(
         }
     });
     ranked
-}
-
-fn compare_by_share(a: &str, b: &str, source: &RankingSource<'_>) -> Ordering {
-    let a_share = source.share(a);
-    let b_share = source.share(b);
-    b_share
-        .partial_cmp(&a_share)
-        .unwrap_or(Ordering::Equal)
-        .then_with(|| a.cmp(b))
-}
-
-fn compare_ascending(map: &FxHashMap<String, f64>, a: &str, b: &str) -> Ordering {
-    let a_value = map.get(a).copied().unwrap_or(f64::INFINITY);
-    let b_value = map.get(b).copied().unwrap_or(f64::INFINITY);
-    a_value
-        .partial_cmp(&b_value)
-        .unwrap_or(Ordering::Equal)
-        .then_with(|| a.cmp(b))
 }
 
 fn build_preference_matrices(

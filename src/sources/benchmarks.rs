@@ -15,9 +15,8 @@ pub async fn download_benchmark_data(client: &Client) -> Result<Vec<u8>> {
         .context("failed to download benchmark dataset")
 }
 
-pub async fn load_benchmark_stats(bytes: &[u8]) -> Result<FxHashMap<String, f64>> {
-    let data = bytes.to_vec();
-    let stats = task::spawn_blocking(move || compute_benchmark_stats_sync(&data))
+pub async fn load_benchmark_stats(bytes: Vec<u8>) -> Result<FxHashMap<String, f64>> {
+    let stats = task::spawn_blocking(move || compute_benchmark_stats_sync(&bytes))
         .await
         .context("failed to read benchmark statistics")??;
     Ok(stats)
@@ -75,7 +74,8 @@ fn compute_benchmark_stats_sync(data: &[u8]) -> Result<FxHashMap<String, f64>> {
             _ => continue,
         };
 
-        let key = (lang_raw.to_lowercase(), name.to_string());
+        let lang_key = lang_raw.to_lowercase();
+        let key = (lang_key, name.to_string());
         let entry = best_per_problem.entry(key).or_insert(f64::INFINITY);
         if elapsed < *entry {
             *entry = elapsed;
@@ -87,7 +87,7 @@ fn compute_benchmark_stats_sync(data: &[u8]) -> Result<FxHashMap<String, f64>> {
         if !elapsed.is_finite() || elapsed <= 0.0 {
             continue;
         }
-        if let Some(canonical) = canonical_benchmark_lang(&lang, alias_map) {
+        if let Some(canonical) = canonical_benchmark_lang(lang.as_str(), alias_map) {
             if canonical.is_empty() {
                 continue;
             }
@@ -129,17 +129,16 @@ fn compute_benchmark_stats_sync(data: &[u8]) -> Result<FxHashMap<String, f64>> {
 }
 
 fn canonical_benchmark_lang(
-    lang: &str,
+    lang_lower: &str,
     alias_map: &FxHashMap<&'static str, &'static str>,
 ) -> Option<String> {
-    let key = lang.to_lowercase();
-    if let Some(&alias) = alias_map.get(key.as_str()) {
+    if let Some(&alias) = alias_map.get(lang_lower) {
         if alias.is_empty() {
             return None;
         }
         return Some(alias.to_string());
     }
-    Some(capitalize_word(&key))
+    Some(capitalize_word(lang_lower))
 }
 
 fn benchmark_aliases() -> &'static FxHashMap<&'static str, &'static str> {
@@ -192,12 +191,10 @@ fn benchmark_aliases() -> &'static FxHashMap<&'static str, &'static str> {
 
 fn capitalize_word(input: &str) -> String {
     let mut chars = input.chars();
-    if let Some(first) = chars.next() {
+    chars.next().map_or_else(String::new, |first| {
         let mut output = String::new();
         output.extend(first.to_uppercase());
         output.push_str(&chars.as_str().to_lowercase());
         output
-    } else {
-        String::new()
-    }
+    })
 }

@@ -1,6 +1,6 @@
 [package]
 name = "langrank"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 
 [dependencies]
@@ -12,7 +12,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 	"rustls-tls",
 	"socks",
 ] }
-scraper = "0.24"
+scraper = "0.25"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.48", features = [
@@ -39,3 +39,9 @@ opt-level = 3
 # "-Ctarget-cpu=x86-64-v3",
 # "-Ctarget-feature=+avx2,+fma",
 # ]
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+cargo = "warn"
