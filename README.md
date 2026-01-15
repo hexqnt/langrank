@@ -1,5 +1,7 @@
 # 🌟 LangRank
 
+[![CI](https://github.com/hexqnt/langrank/actions/workflows/ci.yml/badge.svg)](https://github.com/hexqnt/langrank/actions/workflows/ci.yml)
+
 LangRank — утилита на Rust, которая собирает свежие рейтинги популярности языков программирования (TIOBE, PYPL, Languish), объединяет их с данными Benchmarks Game и вычисляет итоговое ранжирование по методу Шульце.
 
 ![LangRank poster](img/poster.png)
