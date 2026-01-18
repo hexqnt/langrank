@@ -1,12 +1,12 @@
 pub mod benchmarks;
+pub mod languish;
 pub mod pypl;
 pub mod tiobe;
-pub mod languish;
 
 pub use benchmarks::{download_benchmark_data, load_benchmark_stats};
+pub use languish::fetch_languish;
 pub use pypl::fetch_pypl;
 pub use tiobe::fetch_tiobe;
-pub use languish::fetch_languish;
 
 use crate::RankingEntry;
 use anyhow::{Context, Result, anyhow};

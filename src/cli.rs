@@ -9,10 +9,12 @@ use clap_complete::{Shell, generate, generate_to};
 pub const DEFAULT_RANKINGS_PATH: &str = "data/input/rankings.csv";
 pub const DEFAULT_BENCHMARKS_PATH: &str = "data/input/benchmarksgame.csv";
 pub const DEFAULT_SCHULZE_PATH: &str = "data/output/schulze_rankings.csv";
+pub const DEFAULT_HTML_PATH: &str = "data/output/report.html";
 
 pub const SAVE_RANKINGS_HELP: &str = "Save combined TIOBE/PYPL rankings to the given CSV file (defaults to data/input/rankings.csv when no path is provided).";
 pub const SAVE_BENCHMARKS_HELP: &str = "Save the downloaded benchmark dataset to the given CSV file (defaults to data/input/benchmarksgame.csv when no path is provided).";
 pub const SAVE_SCHULZE_HELP: &str = "Save the computed Schulze ranking to the given CSV file (defaults to data/output/schulze_rankings.csv when no path is provided).";
+pub const SAVE_HTML_HELP: &str = "Save the HTML report to the given file (defaults to data/output/report.html when no path is provided).";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -45,6 +47,14 @@ pub struct Cli {
         help = SAVE_SCHULZE_HELP
     )]
     pub save_schulze: Option<PathBuf>,
+    #[arg(
+        long,
+        value_name = "FILE",
+        num_args = 0..=1,
+        default_missing_value = DEFAULT_HTML_PATH,
+        help = SAVE_HTML_HELP
+    )]
+    pub save_html: Option<PathBuf>,
     #[arg(
         long,
         help = "Print the complete Schulze table with every row and column instead of the abbreviated summary."

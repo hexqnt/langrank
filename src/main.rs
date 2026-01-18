@@ -1,4 +1,5 @@
 use crate::cli::Cli;
+use crate::report::{HtmlReportContext, HtmlReportPaths, save_html_report};
 use crate::sources::{
     download_benchmark_data, fetch_languish, fetch_pypl, fetch_tiobe, load_benchmark_stats,
 };
@@ -17,6 +18,7 @@ use std::time::Duration;
 use tokio::fs;
 
 mod cli;
+mod report;
 mod sources;
 
 const HTTP_TIMEOUT_SECONDS: u64 = 20;
@@ -44,6 +46,7 @@ async fn main() -> Result<()> {
         save_rankings,
         save_benchmarks,
         save_schulze,
+        save_html,
         full_output,
         ..
     } = cli;
@@ -89,6 +92,25 @@ async fn main() -> Result<()> {
         save_schulze_csv(&schulze_records, path.as_path()).await?;
     }
 
+    if let Some(path) = save_html.as_ref() {
+        let html_context = HtmlReportContext {
+            tiobe_count: tiobe.len(),
+            pypl_count: pypl_original_len,
+            languish_count: languish.len(),
+            benchmark_lang_count,
+            run_started_at: &run_started_at,
+            schulze_records: &schulze_records,
+            full_output,
+            paths: HtmlReportPaths {
+                benchmarks: save_benchmarks.as_deref(),
+                rankings: save_rankings.as_deref(),
+                schulze: save_schulze.as_deref(),
+            },
+            output_path: path.as_path(),
+        };
+        save_html_report(path.as_path(), &html_context).await?;
+    }
+
     print_summary(&SummaryContext {
         tiobe_count: tiobe.len(),
         pypl_count: pypl_original_len,
@@ -99,6 +121,7 @@ async fn main() -> Result<()> {
             benchmarks: save_benchmarks.as_deref(),
             rankings: save_rankings.as_deref(),
             schulze: save_schulze.as_deref(),
+            html: save_html.as_deref(),
         },
         schulze_records: &schulze_records,
         full_output,
@@ -111,6 +134,7 @@ struct SummaryPaths<'a> {
     benchmarks: Option<&'a Path>,
     rankings: Option<&'a Path>,
     schulze: Option<&'a Path>,
+    html: Option<&'a Path>,
 }
 
 struct SummaryContext<'a> {
@@ -179,6 +203,7 @@ fn print_summary_paths(paths: &SummaryPaths<'_>) {
         paths.schulze,
         "not saved (use --save-schulze)",
     );
+    print_path_line("HTML Report", paths.html, "not saved (use --save-html)");
 }
 
 fn print_path_line(label: &str, path: Option<&Path>, hint: &str) {
@@ -313,7 +338,7 @@ fn format_trend(trend: Option<f64>) -> String {
     )
 }
 
-async fn write_output_file(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) async fn write_output_file(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .await
@@ -416,7 +441,7 @@ struct CsvRecord<'a> {
 }
 
 #[derive(Debug, Serialize)]
-struct SchulzeRecord {
+pub(crate) struct SchulzeRecord {
     position: usize,
     lang: String,
     tiobe_rank: Option<u32>,
