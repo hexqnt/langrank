@@ -239,8 +239,8 @@ fn render_full_table_rows(records: &[SchulzeRecord]) -> String {
             "<td><span class=\"trend {l_class}\">{l_trend}</span></td>"
         ));
         rows.push_str(&format!(
-            "<td class=\"num\">{:.2}</td>",
-            record.benchmark_elapsed
+            "<td class=\"num\">{}</td>",
+            format_optional_float(record.benchmark_elapsed)
         ));
 
         rows.push_str(&format!("<td class=\"num\">{}</td>", record.schulze_wins));
@@ -265,8 +265,8 @@ fn render_compact_table_rows(records: &[SchulzeRecord], limit: usize) -> String 
             record.languish_share
         ));
         rows.push_str(&format!(
-            "<td class=\"num\">{:.2}</td>",
-            record.benchmark_elapsed
+            "<td class=\"num\">{}</td>",
+            format_optional_float(record.benchmark_elapsed)
         ));
         rows.push_str(&format!("<td class=\"num\">{}</td>", record.schulze_wins));
         rows.push_str("</tr>\n");
@@ -348,6 +348,13 @@ fn relative_link(html_path: &Path, target: &Path) -> Option<String> {
 
 fn format_optional_rank(rank: Option<u32>) -> String {
     rank.map_or_else(|| "-".to_string(), |value| value.to_string())
+}
+
+fn format_optional_float(value: Option<f64>) -> String {
+    match value {
+        Some(v) if v.is_finite() => format!("{v:.2}"),
+        _ => "-".to_string(),
+    }
 }
 
 fn format_trend_html(trend: Option<f64>) -> (String, &'static str) {

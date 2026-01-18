@@ -10,7 +10,7 @@ use colored::Colorize;
 use csv::Writer;
 use ndarray::{Array2, Zip};
 use reqwest::Client;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use serde::Serialize;
 use std::cmp::Ordering;
 use std::path::Path;
@@ -22,6 +22,8 @@ mod report;
 mod sources;
 
 const HTTP_TIMEOUT_SECONDS: u64 = 20;
+const MIN_SOURCE_OVERLAP: usize = 3;
+const MAX_RANKED_LANGUAGES: usize = 30;
 
 #[derive(Debug, Serialize, Clone)]
 pub struct RankingEntry {
@@ -157,14 +159,14 @@ fn print_summary(context: &SummaryContext<'_>) {
     print_schulze_table(context.schulze_records, context.full_output);
     println!(
         "{}",
-        "====================================================".bright_cyan()
+        "=============================================================".bright_cyan()
     );
 }
 
 fn print_summary_header(context: &SummaryContext<'_>) {
     println!(
         "{}",
-        "================= LangRank Update ================="
+        "====================== LangRank Update ======================"
             .bold()
             .bright_cyan()
     );
@@ -251,7 +253,7 @@ fn print_full_schulze_table(records: &[SchulzeRecord]) {
     println!(
         "{}",
         "----+---------------+--------+--------+---------+--------+--------+---------+--------+---------+--------+------"
-            .bright_black()
+        .bright_black()
     );
 
     for record in records {
@@ -267,7 +269,7 @@ fn print_full_schulze_table(records: &[SchulzeRecord]) {
         let pypl_trend = format_trend(record.pypl_trend);
         let languish_share = format!("{:.2}", record.languish_share);
         let languish_trend = format_trend(record.languish_trend);
-        let perf = format!("{:.2}", record.benchmark_elapsed);
+        let perf = format_perf(record.benchmark_elapsed);
         let line = format!(
             "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>7} | {:>8} | {:>4}",
             record.position,
@@ -300,14 +302,15 @@ fn print_compact_schulze_table(records: &[SchulzeRecord]) {
         "----+---------------+--------+-------+------+---------+------".bright_black()
     );
     for record in records.iter().take(10) {
+        let perf = format_perf(record.benchmark_elapsed);
         let line = format!(
-            "{:>3} | {:<13} | {:>6.2} | {:>5.2} | {:>5.2} | {:>7.2} | {:>4}",
+            "{:>3} | {:<13} | {:>6.2} | {:>5.2} | {:>5.2} | {:>7} | {:>4}",
             record.position,
             record.lang,
             record.tiobe_share,
             record.pypl_share,
             record.languish_share,
-            record.benchmark_elapsed,
+            perf,
             record.schulze_wins
         );
         println!("{}", line.bright_green());
@@ -336,6 +339,13 @@ fn format_trend(trend: Option<f64>) -> String {
             format!("{normalized:+.2}")
         },
     )
+}
+
+fn format_perf(value: Option<f64>) -> String {
+    match value {
+        Some(v) if v.is_finite() => format!("{v:.2}"),
+        _ => "-".to_string(),
+    }
 }
 
 pub(crate) async fn write_output_file(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -453,7 +463,7 @@ pub(crate) struct SchulzeRecord {
     languish_rank: Option<u32>,
     languish_share: f64,
     languish_trend: Option<f64>,
-    benchmark_elapsed: f64,
+    benchmark_elapsed: Option<f64>,
     schulze_wins: usize,
 }
 
@@ -492,7 +502,14 @@ fn compute_schulze_records(
         },
         benchmark,
     };
-    let languages = collect_languages(tiobe, pypl, languish, benchmark)?;
+    let languages = collect_languages(tiobe, pypl, languish, benchmark, MIN_SOURCE_OVERLAP);
+    let languages = limit_languages(languages, &sources, MAX_RANKED_LANGUAGES);
+    if languages.len() < 2 {
+        return Err(anyhow!(
+            "Not enough overlapping languages ({}) to compute Schulze ranking",
+            languages.len()
+        ));
+    }
     let ballots = build_ballots(&languages, &sources);
     let (_d, p) = build_preference_matrices(&languages, &ballots);
     let index_map = build_language_index(&languages);
@@ -505,34 +522,23 @@ fn compute_schulze_records(
             .filter(|&other| other != idx && p[[idx, other]] > p[[other, idx]])
             .count();
 
-        let tiobe_entry = sources
-            .tiobe
-            .entry(lang)
-            .ok_or_else(|| anyhow!("missing TIOBE data for {lang}"))?;
-        let pypl_entry = sources
-            .pypl
-            .entry(lang)
-            .ok_or_else(|| anyhow!("missing PYPL data for {lang}"))?;
-        let languish_entry = sources
-            .languish
-            .entry(lang)
-            .ok_or_else(|| anyhow!("missing Languish data for {lang}"))?;
-        let bench_value = sources
-            .benchmark_value(lang)
-            .ok_or_else(|| anyhow!("missing benchmark data for {lang}"))?;
+        let tiobe_entry = sources.tiobe.entry(lang);
+        let pypl_entry = sources.pypl.entry(lang);
+        let languish_entry = sources.languish.entry(lang);
+        let bench_value = sources.benchmark_value(lang);
 
         records.push(SchulzeRecord {
             position: position + 1,
             lang: lang.clone(),
-            tiobe_rank: tiobe_entry.rank,
-            tiobe_share: tiobe_entry.share,
-            tiobe_trend: tiobe_entry.trend,
-            pypl_rank: pypl_entry.rank,
-            pypl_share: pypl_entry.share,
-            pypl_trend: pypl_entry.trend,
-            languish_rank: languish_entry.rank,
-            languish_share: languish_entry.share,
-            languish_trend: languish_entry.trend,
+            tiobe_rank: tiobe_entry.and_then(|entry| entry.rank),
+            tiobe_share: tiobe_entry.map_or(0.0, |entry| entry.share),
+            tiobe_trend: tiobe_entry.and_then(|entry| entry.trend),
+            pypl_rank: pypl_entry.and_then(|entry| entry.rank),
+            pypl_share: pypl_entry.map_or(0.0, |entry| entry.share),
+            pypl_trend: pypl_entry.and_then(|entry| entry.trend),
+            languish_rank: languish_entry.and_then(|entry| entry.rank),
+            languish_share: languish_entry.map_or(0.0, |entry| entry.share),
+            languish_trend: languish_entry.and_then(|entry| entry.trend),
             benchmark_elapsed: bench_value,
             schulze_wins: wins,
         });
@@ -582,27 +588,93 @@ fn collect_languages(
     pypl: &[RankingEntry],
     languish: &[RankingEntry],
     benchmark: &FxHashMap<String, f64>,
-) -> Result<Vec<String>> {
-    let tiobe_set: FxHashSet<&str> = tiobe.iter().map(|entry| entry.lang.as_str()).collect();
-    let pypl_set: FxHashSet<&str> = pypl.iter().map(|entry| entry.lang.as_str()).collect();
-    let languish_set: FxHashSet<&str> = languish.iter().map(|entry| entry.lang.as_str()).collect();
-    let bench_set: FxHashSet<&str> = benchmark.keys().map(String::as_str).collect();
-
-    let mut languages: Vec<String> = tiobe_set
-        .intersection(&pypl_set)
-        .filter(|&&lang| languish_set.contains(lang) && bench_set.contains(lang))
-        .map(|&lang| lang.to_string())
-        .collect();
-
-    if languages.len() < 2 {
-        return Err(anyhow!(
-            "Not enough overlapping languages ({}) to compute Schulze ranking",
-            languages.len()
-        ));
+    min_sources: usize,
+) -> Vec<std::string::String> {
+    let mut counts: FxHashMap<String, usize> = FxHashMap::default();
+    for entry in tiobe {
+        *counts.entry(entry.lang.clone()).or_insert(0) += 1;
+    }
+    for entry in pypl {
+        *counts.entry(entry.lang.clone()).or_insert(0) += 1;
+    }
+    for entry in languish {
+        *counts.entry(entry.lang.clone()).or_insert(0) += 1;
+    }
+    for lang in benchmark.keys() {
+        *counts.entry(lang.clone()).or_insert(0) += 1;
     }
 
+    let mut languages: Vec<String> = counts
+        .into_iter()
+        .filter(|(_, count)| *count >= min_sources)
+        .map(|(lang, _)| lang)
+        .collect();
     languages.sort_unstable();
-    Ok(languages)
+    languages
+}
+
+fn limit_languages(
+    languages: Vec<String>,
+    sources: &RankingSources<'_>,
+    max_languages: usize,
+) -> Vec<String> {
+    if max_languages == 0 || languages.len() <= max_languages {
+        return languages;
+    }
+
+    let mut scored: Vec<(usize, f64, f64, String)> = Vec::with_capacity(languages.len());
+    for lang in languages {
+        let lang_ref = lang.as_str();
+        let source_count = count_sources(lang_ref, sources);
+        let popularity_score = sources.tiobe.share(lang_ref)
+            + sources.pypl.share(lang_ref)
+            + sources.languish.share(lang_ref);
+        let perf_component = sources
+            .benchmark_value(lang_ref)
+            .and_then(|value| {
+                if value.is_finite() && value > 0.0 {
+                    Some(1.0 / value)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0.0);
+        scored.push((source_count, popularity_score, perf_component, lang));
+    }
+
+    let cmp_scores =
+        |(count_a, pop_a, perf_a, lang_a): &(usize, f64, f64, String),
+         (count_b, pop_b, perf_b, lang_b): &(usize, f64, f64, String)| {
+            count_b
+                .cmp(count_a)
+                .then_with(|| pop_b.partial_cmp(pop_a).unwrap_or(Ordering::Equal))
+                .then_with(|| perf_b.partial_cmp(perf_a).unwrap_or(Ordering::Equal))
+                .then_with(|| lang_a.cmp(lang_b))
+        };
+    let nth = max_languages.saturating_sub(1);
+    scored.select_nth_unstable_by(nth, cmp_scores);
+    scored.truncate(max_languages);
+
+    let mut limited: Vec<String> = scored.into_iter().map(|(_, _, _, lang)| lang).collect();
+    limited.sort_unstable();
+    limited
+}
+
+fn count_sources(lang: &str, sources: &RankingSources<'_>) -> usize {
+    let mut count = 0;
+    if sources.tiobe.entry(lang).is_some() {
+        count += 1;
+    }
+    if sources.pypl.entry(lang).is_some() {
+        count += 1;
+    }
+    if sources.languish.entry(lang).is_some() {
+        count += 1;
+    }
+    if sources.benchmark.contains_key(lang) {
+        count += 1;
+    }
+    count
 }
 
 fn build_ballots(languages: &[String], sources: &RankingSources<'_>) -> Vec<Vec<String>> {
