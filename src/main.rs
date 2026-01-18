@@ -8,11 +8,14 @@ use chrono::{DateTime, Local};
 use clap::Parser;
 use colored::Colorize;
 use csv::Writer;
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use ndarray::{Array2, Zip};
 use reqwest::Client;
 use rustc_hash::FxHashMap;
 use serde::Serialize;
 use std::cmp::Ordering;
+use std::future::Future;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::time::Duration;
 use tokio::fs;
@@ -24,6 +27,43 @@ mod sources;
 const HTTP_TIMEOUT_SECONDS: u64 = 20;
 const MIN_SOURCE_OVERLAP: usize = 3;
 const MAX_RANKED_LANGUAGES: usize = 30;
+const SPINNER_TICKS_BRAILLE: [&str; 8] = [
+    "\x1b[1;96m⠁\x1b[0m",
+    "\x1b[1;96m⠂\x1b[0m",
+    "\x1b[1;96m⠄\x1b[0m",
+    "\x1b[1;96m⡀\x1b[0m",
+    "\x1b[1;96m⢀\x1b[0m",
+    "\x1b[1;96m⠠\x1b[0m",
+    "\x1b[1;96m⠐\x1b[0m",
+    "\x1b[1;96m⠈\x1b[0m",
+];
+const SPINNER_TICKS_ASCII: &str = "|/-\\";
+
+const STAGE_TOTAL: u8 = 2;
+const STAGE_FETCH: &str = "Получение данных";
+const STAGE_COMPUTE: &str = "Расчёт";
+
+#[derive(Clone, Copy)]
+enum Stage {
+    Fetch,
+    Compute,
+}
+
+impl Stage {
+    const fn index(self) -> u8 {
+        match self {
+            Self::Fetch => 1,
+            Self::Compute => 2,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Fetch => STAGE_FETCH,
+            Self::Compute => STAGE_COMPUTE,
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Clone)]
 pub struct RankingEntry {
@@ -31,6 +71,78 @@ pub struct RankingEntry {
     pub rank: Option<u32>,
     pub share: f64,
     pub trend: Option<f64>,
+}
+
+struct ProgressState {
+    multi: MultiProgress,
+    style: ProgressStyle,
+}
+
+impl ProgressState {
+    fn new() -> Self {
+        let use_ascii = is_dumb_term();
+        let multi = MultiProgress::new();
+        multi.set_draw_target(ProgressDrawTarget::stderr_with_hz(15));
+        let style = ProgressStyle::with_template("{spinner} {msg}").unwrap();
+        let style = if use_ascii {
+            style.tick_chars(SPINNER_TICKS_ASCII)
+        } else {
+            style.tick_strings(&SPINNER_TICKS_BRAILLE)
+        };
+        Self { multi, style }
+    }
+
+    fn spinner(&self, message: String) -> ProgressBar {
+        let bar = self.multi.add(ProgressBar::new_spinner());
+        bar.set_style(self.style.clone());
+        bar.set_message(message);
+        bar.enable_steady_tick(Duration::from_millis(100));
+        bar
+    }
+
+    fn clear(&self) {
+        let _ = self.multi.clear();
+    }
+}
+
+fn is_dumb_term() -> bool {
+    std::env::var("TERM")
+        .map(|term| term.eq_ignore_ascii_case("dumb"))
+        .unwrap_or(false)
+}
+
+fn format_stage_message(stage: Stage, label: &str) -> String {
+    let prefix = format!("[{}/{}]", stage.index(), STAGE_TOTAL);
+    format!(
+        "{} {}: {}",
+        prefix.bright_yellow().bold(),
+        stage.label().bright_cyan().bold(),
+        label.bright_white().bold()
+    )
+}
+
+async fn run_with_spinner<T>(
+    progress: &ProgressState,
+    stage: Stage,
+    label: &str,
+    fut: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    let message = format_stage_message(stage, label);
+    let bar = progress.spinner(message);
+    let result = fut.await;
+    match &result {
+        Ok(_) => bar.finish_with_message(format!(
+            "{} {}",
+            format_stage_message(stage, label),
+            "done".bright_green().bold()
+        )),
+        Err(_) => bar.finish_with_message(format!(
+            "{} {}",
+            format_stage_message(stage, label),
+            "failed".bright_red().bold()
+        )),
+    }
+    result
 }
 
 #[tokio::main]
@@ -50,6 +162,7 @@ async fn main() -> Result<()> {
         save_schulze,
         save_html,
         full_output,
+        no_progress,
         ..
     } = cli;
 
@@ -61,12 +174,33 @@ async fn main() -> Result<()> {
         .build()
         .context("failed to build HTTP client")?;
 
-    let (tiobe, mut pypl, languish, bench_bytes) = tokio::try_join!(
-        fetch_tiobe(&client),
-        fetch_pypl(&client),
-        fetch_languish(&client),
-        download_benchmark_data(&client)
-    )?;
+    let progress_enabled = !no_progress && std::io::stderr().is_terminal();
+    let progress = if progress_enabled {
+        Some(ProgressState::new())
+    } else {
+        None
+    };
+
+    let (tiobe, mut pypl, languish, bench_bytes) = if let Some(progress) = progress.as_ref() {
+        tokio::try_join!(
+            run_with_spinner(progress, Stage::Fetch, "TIOBE", fetch_tiobe(&client)),
+            run_with_spinner(progress, Stage::Fetch, "PYPL", fetch_pypl(&client)),
+            run_with_spinner(progress, Stage::Fetch, "Languish", fetch_languish(&client)),
+            run_with_spinner(
+                progress,
+                Stage::Fetch,
+                "Benchmarks",
+                download_benchmark_data(&client)
+            )
+        )?
+    } else {
+        tokio::try_join!(
+            fetch_tiobe(&client),
+            fetch_pypl(&client),
+            fetch_languish(&client),
+            download_benchmark_data(&client)
+        )?
+    };
 
     let pypl_original_len = pypl.len();
     adjust_pypl_entries(&tiobe, &mut pypl);
@@ -87,7 +221,17 @@ async fn main() -> Result<()> {
         save_benchmarks_csv(&bench_bytes, path.as_path()).await?;
     }
 
-    let benchmark_stats = load_benchmark_stats(bench_bytes).await?;
+    let benchmark_stats = if let Some(progress) = progress.as_ref() {
+        run_with_spinner(
+            progress,
+            Stage::Compute,
+            "Compute benchmarks",
+            load_benchmark_stats(bench_bytes),
+        )
+        .await?
+    } else {
+        load_benchmark_stats(bench_bytes).await?
+    };
     let benchmark_lang_count = benchmark_stats.len();
     let schulze_records = compute_schulze_records(&tiobe, &pypl, &languish, &benchmark_stats)?;
     if let Some(path) = save_schulze.as_ref() {
@@ -111,6 +255,10 @@ async fn main() -> Result<()> {
             output_path: path.as_path(),
         };
         save_html_report(path.as_path(), &html_context).await?;
+    }
+
+    if let Some(progress) = progress.as_ref() {
+        progress.clear();
     }
 
     print_summary(&SummaryContext {
@@ -156,11 +304,11 @@ fn print_summary(context: &SummaryContext<'_>) {
     print_summary_paths(&context.paths);
     println!();
     println!("{}", "Schulze Ranking".bold().bright_magenta());
-    print_schulze_table(context.schulze_records, context.full_output);
-    println!(
-        "{}",
-        "=============================================================".bright_cyan()
-    );
+    let table_width = print_schulze_table(context.schulze_records, context.full_output);
+    if table_width > 0 {
+        let divider = "=".repeat(table_width);
+        println!("{}", divider.bright_cyan());
+    }
 }
 
 fn print_summary_header(context: &SummaryContext<'_>) {
@@ -220,20 +368,21 @@ fn print_path_line(label: &str, path: Option<&Path>, hint: &str) {
     }
 }
 
-fn print_schulze_table(records: &[SchulzeRecord], full_output: bool) {
+fn print_schulze_table(records: &[SchulzeRecord], full_output: bool) -> usize {
     if records.is_empty() {
-        println!("{}", "No Schulze data available.".bright_black());
-        return;
+        let message = "No Schulze data available.";
+        println!("{}", message.bright_black());
+        return message.len();
     }
 
     if full_output {
-        print_full_schulze_table(records);
+        print_full_schulze_table(records)
     } else {
-        print_compact_schulze_table(records);
+        print_compact_schulze_table(records)
     }
 }
 
-fn print_full_schulze_table(records: &[SchulzeRecord]) {
+fn print_full_schulze_table(records: &[SchulzeRecord]) -> usize {
     let header = format!(
         "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>7} | {:>8} | {:>4}",
         "Pos",
@@ -249,12 +398,10 @@ fn print_full_schulze_table(records: &[SchulzeRecord]) {
         "Perf(s)",
         "Wins"
     );
+    let separator = "----+---------------+--------+--------+---------+--------+--------+---------+--------+---------+--------+------";
+    let mut max_width = header.len().max(separator.len());
     println!("{}", header.bold().bright_white());
-    println!(
-        "{}",
-        "----+---------------+--------+--------+---------+--------+--------+---------+--------+---------+--------+------"
-        .bright_black()
-    );
+    println!("{}", separator.bright_black());
 
     for record in records {
         let tiobe_rank = record
@@ -285,22 +432,19 @@ fn print_full_schulze_table(records: &[SchulzeRecord]) {
             perf,
             record.schulze_wins
         );
+        max_width = max_width.max(line.len());
         println!("{}", line.bright_green());
     }
+
+    max_width
 }
 
-fn print_compact_schulze_table(records: &[SchulzeRecord]) {
-    println!(
-        "{}",
-        "Pos | Language      | TIOBE% | PYPL% | LANG% | Perf(s) | Wins"
-            .to_string()
-            .bold()
-            .bright_white()
-    );
-    println!(
-        "{}",
-        "----+---------------+--------+-------+------+---------+------".bright_black()
-    );
+fn print_compact_schulze_table(records: &[SchulzeRecord]) -> usize {
+    let header = "Pos | Language      | TIOBE% | PYPL% | LANG% | Perf(s) | Wins";
+    let separator = "----+---------------+--------+-------+------+---------+------";
+    let mut max_width = header.len().max(separator.len());
+    println!("{}", header.bold().bright_white());
+    println!("{}", separator.bright_black());
     for record in records.iter().take(10) {
         let perf = format_perf(record.benchmark_elapsed);
         let line = format!(
@@ -313,18 +457,19 @@ fn print_compact_schulze_table(records: &[SchulzeRecord]) {
             perf,
             record.schulze_wins
         );
+        max_width = max_width.max(line.len());
         println!("{}", line.bright_green());
     }
     if records.len() > 10 {
-        println!(
-            "{}",
-            format!(
-                "... {} more entries (use --full-output to display all).",
-                records.len() - 10
-            )
-            .bright_black()
+        let message = format!(
+            "... {} more entries (use --full-output to display all).",
+            records.len() - 10
         );
+        max_width = max_width.max(message.len());
+        println!("{}", message.bright_black());
     }
+
+    max_width
 }
 
 async fn save_benchmarks_csv(bytes: &[u8], path: &Path) -> Result<()> {

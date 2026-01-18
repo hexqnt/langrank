@@ -60,6 +60,8 @@ pub struct Cli {
         help = "Print the complete Schulze table with every row and column instead of the abbreviated summary."
     )]
     pub full_output: bool,
+    #[arg(long, help = "Disable progress spinner output.")]
+    pub no_progress: bool,
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

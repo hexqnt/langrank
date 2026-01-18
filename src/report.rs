@@ -100,7 +100,10 @@ fn render_html_report(context: &HtmlReportContext<'_>) -> String {
     html.push_str("</a>\n");
     html.push_str("</div>\n");
     html.push_str("<h1>LangRank Report</h1>\n");
-    html.push_str("<p class=\"subtitle\">Aggregated language popularity and performance ranking using the Schulze method.</p>\n");
+    html.push_str(&format!(
+        "<p class=\"subtitle\">Aggregated language popularity and performance ranking using the <a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">Schulze method</a>.</p>\n",
+        SCHULZE_METHOD_URL
+    ));
     html.push_str("<div class=\"meta\">\n");
     html.push_str(&format!(
         "<div><span class=\"label\">Generated</span><span class=\"value mono\">{}</span></div>\n",
@@ -391,6 +394,7 @@ fn escape_html(input: &str) -> String {
 }
 
 const GITHUB_REPO_URL: &str = "https://github.com/hexqnt/langrank";
+const SCHULZE_METHOD_URL: &str = "https://en.wikipedia.org/wiki/Schulze_method";
 const CDN_FONTS_GOOGLEAPIS: &str = "https://fonts.googleapis.com";
 const CDN_FONTS_GSTATIC: &str = "https://fonts.gstatic.com";
 const CDN_FONTS_STYLESHEET: &str = "https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@400;500;600&display=swap";
@@ -510,6 +514,20 @@ h1 {
   color: var(--muted);
   max-width: 680px;
   line-height: 1.5;
+}
+
+.subtitle a {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: rgba(224, 122, 95, 0.6);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.subtitle a:hover {
+  color: var(--accent-strong);
+  text-decoration-color: var(--accent-strong);
 }
 
 .meta {

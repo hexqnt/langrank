@@ -28,6 +28,7 @@ chrono = { version = "0.4", features = ["clock"] }
 clap_complete = "4.5"
 rustc-hash = "2.1"
 ndarray = "0.17"
+indicatif = "0.18"
 
 [profile.release]
 strip = true
