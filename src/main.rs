@@ -1,70 +1,36 @@
 use crate::cli::Cli;
+use crate::progress::{ProgressState, Stage, run_with_spinner};
 use crate::report::{HtmlReportContext, HtmlReportPaths, save_html_report};
 use crate::sources::{
     download_benchmark_data, fetch_languish, fetch_pypl, fetch_tiobe, load_benchmark_stats,
 };
+use crate::summary::{SummaryContext, SummaryPaths, print_summary};
 use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, Local};
+use chrono::Local;
 use clap::Parser;
-use colored::Colorize;
 use csv::Writer;
-use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use ndarray::{Array2, Zip};
 use reqwest::Client;
 use rustc_hash::FxHashMap;
 use serde::Serialize;
 use std::cmp::Ordering;
-use std::future::Future;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::time::Duration;
 use tokio::fs;
 
 mod cli;
+mod formatting;
+mod progress;
 mod report;
 mod sources;
+mod summary;
 
 const HTTP_TIMEOUT_SECONDS: u64 = 20;
+const MIN_SOURCE_ENTRIES: usize = 10;
+const MIN_BENCHMARK_LANGUAGES: usize = 10;
 const MIN_SOURCE_OVERLAP: usize = 3;
 const MAX_RANKED_LANGUAGES: usize = 30;
-const SPINNER_TICKS_BRAILLE: [&str; 8] = [
-    "\x1b[1;96m⠁\x1b[0m",
-    "\x1b[1;96m⠂\x1b[0m",
-    "\x1b[1;96m⠄\x1b[0m",
-    "\x1b[1;96m⡀\x1b[0m",
-    "\x1b[1;96m⢀\x1b[0m",
-    "\x1b[1;96m⠠\x1b[0m",
-    "\x1b[1;96m⠐\x1b[0m",
-    "\x1b[1;96m⠈\x1b[0m",
-];
-const SPINNER_TICKS_ASCII: &str = "|/-\\";
-
-const STAGE_TOTAL: u8 = 2;
-const STAGE_FETCH: &str = "Получение данных";
-const STAGE_COMPUTE: &str = "Расчёт";
-
-#[derive(Clone, Copy)]
-enum Stage {
-    Fetch,
-    Compute,
-}
-
-impl Stage {
-    const fn index(self) -> u8 {
-        match self {
-            Self::Fetch => 1,
-            Self::Compute => 2,
-        }
-    }
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Fetch => STAGE_FETCH,
-            Self::Compute => STAGE_COMPUTE,
-        }
-    }
-}
-
 #[derive(Debug, Serialize, Clone)]
 pub struct RankingEntry {
     pub lang: String,
@@ -73,81 +39,10 @@ pub struct RankingEntry {
     pub trend: Option<f64>,
 }
 
-struct ProgressState {
-    multi: MultiProgress,
-    style: ProgressStyle,
-}
-
-impl ProgressState {
-    fn new() -> Self {
-        let use_ascii = is_dumb_term();
-        let multi = MultiProgress::new();
-        multi.set_draw_target(ProgressDrawTarget::stderr_with_hz(15));
-        let style = ProgressStyle::with_template("{spinner} {msg}").unwrap();
-        let style = if use_ascii {
-            style.tick_chars(SPINNER_TICKS_ASCII)
-        } else {
-            style.tick_strings(&SPINNER_TICKS_BRAILLE)
-        };
-        Self { multi, style }
-    }
-
-    fn spinner(&self, message: String) -> ProgressBar {
-        let bar = self.multi.add(ProgressBar::new_spinner());
-        bar.set_style(self.style.clone());
-        bar.set_message(message);
-        bar.enable_steady_tick(Duration::from_millis(100));
-        bar
-    }
-
-    fn clear(&self) {
-        let _ = self.multi.clear();
-    }
-}
-
-fn is_dumb_term() -> bool {
-    std::env::var("TERM")
-        .map(|term| term.eq_ignore_ascii_case("dumb"))
-        .unwrap_or(false)
-}
-
-fn format_stage_message(stage: Stage, label: &str) -> String {
-    let prefix = format!("[{}/{}]", stage.index(), STAGE_TOTAL);
-    format!(
-        "{} {}: {}",
-        prefix.bright_yellow().bold(),
-        stage.label().bright_cyan().bold(),
-        label.bright_white().bold()
-    )
-}
-
-async fn run_with_spinner<T>(
-    progress: &ProgressState,
-    stage: Stage,
-    label: &str,
-    fut: impl Future<Output = Result<T>>,
-) -> Result<T> {
-    let message = format_stage_message(stage, label);
-    let bar = progress.spinner(message);
-    let result = fut.await;
-    match &result {
-        Ok(_) => bar.finish_with_message(format!(
-            "{} {}",
-            format_stage_message(stage, label),
-            "done".bright_green().bold()
-        )),
-        Err(_) => bar.finish_with_message(format!(
-            "{} {}",
-            format_stage_message(stage, label),
-            "failed".bright_red().bold()
-        )),
-    }
-    result
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
-    colored::control::set_override(true);
+    let use_color = should_use_color();
+    colored::control::set_override(use_color);
 
     let mut cli = Cli::parse();
 
@@ -176,7 +71,7 @@ async fn main() -> Result<()> {
 
     let progress_enabled = !no_progress && std::io::stderr().is_terminal();
     let progress = if progress_enabled {
-        Some(ProgressState::new())
+        Some(ProgressState::new(use_color))
     } else {
         None
     };
@@ -205,6 +100,10 @@ async fn main() -> Result<()> {
     let pypl_original_len = pypl.len();
     adjust_pypl_entries(&tiobe, &mut pypl);
 
+    ensure_min_entries("TIOBE", tiobe.len(), MIN_SOURCE_ENTRIES)?;
+    ensure_min_entries("PYPL", pypl_original_len, MIN_SOURCE_ENTRIES)?;
+    ensure_min_entries("Languish", languish.len(), MIN_SOURCE_ENTRIES)?;
+
     if let Some(path) = save_rankings.as_ref() {
         save_rankings_csv(
             path.as_path(),
@@ -232,6 +131,11 @@ async fn main() -> Result<()> {
     } else {
         load_benchmark_stats(bench_bytes).await?
     };
+    ensure_min_entries(
+        "Benchmarks Game",
+        benchmark_stats.len(),
+        MIN_BENCHMARK_LANGUAGES,
+    )?;
     let benchmark_lang_count = benchmark_stats.len();
     let schulze_records = compute_schulze_records(&tiobe, &pypl, &languish, &benchmark_stats)?;
     if let Some(path) = save_schulze.as_ref() {
@@ -280,217 +184,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-struct SummaryPaths<'a> {
-    benchmarks: Option<&'a Path>,
-    rankings: Option<&'a Path>,
-    schulze: Option<&'a Path>,
-    html: Option<&'a Path>,
-}
-
-struct SummaryContext<'a> {
-    tiobe_count: usize,
-    pypl_count: usize,
-    languish_count: usize,
-    benchmark_lang_count: usize,
-    run_started_at: &'a DateTime<Local>,
-    paths: SummaryPaths<'a>,
-    schulze_records: &'a [SchulzeRecord],
-    full_output: bool,
-}
-
-fn print_summary(context: &SummaryContext<'_>) {
-    println!();
-    print_summary_header(context);
-    print_summary_paths(&context.paths);
-    println!();
-    println!("{}", "Schulze Ranking".bold().bright_magenta());
-    let table_width = print_schulze_table(context.schulze_records, context.full_output);
-    if table_width > 0 {
-        let divider = "=".repeat(table_width);
-        println!("{}", divider.bright_cyan());
-    }
-}
-
-fn print_summary_header(context: &SummaryContext<'_>) {
-    println!(
-        "{}",
-        "====================== LangRank Update ======================"
-            .bold()
-            .bright_cyan()
-    );
-    println!(
-        "{} {}",
-        "Run started".bright_yellow().bold(),
-        context
-            .run_started_at
-            .format("%Y-%m-%d %H:%M:%S %Z")
-            .to_string()
-            .bright_white()
-    );
-    println!(
-        "{} {} | {} | {} | {}",
-        "Sources".bright_yellow().bold(),
-        format!("TIOBE: {}", context.tiobe_count).bright_white(),
-        format!("PYPL: {}", context.pypl_count).bright_white(),
-        format!("Languish: {}", context.languish_count).bright_white(),
-        format!("Benchmarks: {}", context.benchmark_lang_count).bright_white()
-    );
-}
-
-fn print_summary_paths(paths: &SummaryPaths<'_>) {
-    print_path_line(
-        "Benchmarks CSV",
-        paths.benchmarks,
-        "not saved (use --save-benchmarks)",
-    );
-    print_path_line(
-        "Combined CSV",
-        paths.rankings,
-        "not saved (use --save-rankings)",
-    );
-    print_path_line(
-        "Schulze CSV",
-        paths.schulze,
-        "not saved (use --save-schulze)",
-    );
-    print_path_line("HTML Report", paths.html, "not saved (use --save-html)");
-}
-
-fn print_path_line(label: &str, path: Option<&Path>, hint: &str) {
-    let label_colored = label.bright_yellow().bold();
-    match path {
-        Some(path) => println!(
-            "{} {}",
-            label_colored,
-            format!("{}", path.display()).bright_white()
-        ),
-        None => println!("{} {}", label_colored, hint.bright_black()),
-    }
-}
-
-fn print_schulze_table(records: &[SchulzeRecord], full_output: bool) -> usize {
-    if records.is_empty() {
-        let message = "No Schulze data available.";
-        println!("{}", message.bright_black());
-        return message.len();
-    }
-
-    if full_output {
-        print_full_schulze_table(records)
-    } else {
-        print_compact_schulze_table(records)
-    }
-}
-
-fn print_full_schulze_table(records: &[SchulzeRecord]) -> usize {
-    let header = format!(
-        "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>7} | {:>8} | {:>4}",
-        "Pos",
-        "Language",
-        "T Rank",
-        "T%",
-        "T Trend",
-        "P Rank",
-        "P%",
-        "P Trend",
-        "L%",
-        "L Trend",
-        "Perf(s)",
-        "Wins"
-    );
-    let separator = "----+---------------+--------+--------+---------+--------+--------+---------+--------+---------+--------+------";
-    let mut max_width = header.len().max(separator.len());
-    println!("{}", header.bold().bright_white());
-    println!("{}", separator.bright_black());
-
-    for record in records {
-        let tiobe_rank = record
-            .tiobe_rank
-            .map_or_else(|| "-".to_string(), |value| value.to_string());
-        let pypl_rank = record
-            .pypl_rank
-            .map_or_else(|| "-".to_string(), |value| value.to_string());
-        let tiobe_share = format!("{:.2}", record.tiobe_share);
-        let pypl_share = format!("{:.2}", record.pypl_share);
-        let tiobe_trend = format_trend(record.tiobe_trend);
-        let pypl_trend = format_trend(record.pypl_trend);
-        let languish_share = format!("{:.2}", record.languish_share);
-        let languish_trend = format_trend(record.languish_trend);
-        let perf = format_perf(record.benchmark_elapsed);
-        let line = format!(
-            "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>7} | {:>8} | {:>4}",
-            record.position,
-            record.lang,
-            tiobe_rank,
-            tiobe_share,
-            tiobe_trend,
-            pypl_rank,
-            pypl_share,
-            pypl_trend,
-            languish_share,
-            languish_trend,
-            perf,
-            record.schulze_wins
-        );
-        max_width = max_width.max(line.len());
-        println!("{}", line.bright_green());
-    }
-
-    max_width
-}
-
-fn print_compact_schulze_table(records: &[SchulzeRecord]) -> usize {
-    let header = "Pos | Language      | TIOBE% | PYPL% | LANG% | Perf(s) | Wins";
-    let separator = "----+---------------+--------+-------+------+---------+------";
-    let mut max_width = header.len().max(separator.len());
-    println!("{}", header.bold().bright_white());
-    println!("{}", separator.bright_black());
-    for record in records.iter().take(10) {
-        let perf = format_perf(record.benchmark_elapsed);
-        let line = format!(
-            "{:>3} | {:<13} | {:>6.2} | {:>5.2} | {:>5.2} | {:>7} | {:>4}",
-            record.position,
-            record.lang,
-            record.tiobe_share,
-            record.pypl_share,
-            record.languish_share,
-            perf,
-            record.schulze_wins
-        );
-        max_width = max_width.max(line.len());
-        println!("{}", line.bright_green());
-    }
-    if records.len() > 10 {
-        let message = format!(
-            "... {} more entries (use --full-output to display all).",
-            records.len() - 10
-        );
-        max_width = max_width.max(message.len());
-        println!("{}", message.bright_black());
-    }
-
-    max_width
-}
-
 async fn save_benchmarks_csv(bytes: &[u8], path: &Path) -> Result<()> {
     write_output_file(path, bytes).await
-}
-
-fn format_trend(trend: Option<f64>) -> String {
-    trend.map_or_else(
-        || "-".to_string(),
-        |value| {
-            let normalized = if value.abs() < 0.005 { 0.0 } else { value };
-            format!("{normalized:+.2}")
-        },
-    )
-}
-
-fn format_perf(value: Option<f64>) -> String {
-    match value {
-        Some(v) if v.is_finite() => format!("{v:.2}"),
-        _ => "-".to_string(),
-    }
 }
 
 pub(crate) async fn write_output_file(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -514,6 +209,22 @@ fn finalize_writer(mut writer: Writer<Vec<u8>>, label: &str) -> Result<Vec<u8>> 
     writer
         .into_inner()
         .with_context(|| format!("failed to finalize {label}"))
+}
+
+fn should_use_color() -> bool {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    std::io::stdout().is_terminal()
+}
+
+fn ensure_min_entries(label: &str, count: usize, min: usize) -> Result<()> {
+    if count < min {
+        return Err(anyhow!(
+            "{label} returned {count} entries (expected at least {min}); the source format may have changed."
+        ));
+    }
+    Ok(())
 }
 
 async fn save_rankings_csv(path: &Path, sources: &[(SourceKind, &[RankingEntry])]) -> Result<()> {

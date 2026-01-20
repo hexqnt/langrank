@@ -221,7 +221,7 @@ fn replace_js_hex_escapes(input: &str) -> String {
     out
 }
 
-fn hex_val(c: char) -> u8 {
+const fn hex_val(c: char) -> u8 {
     match c {
         '0'..='9' => (c as u8) - b'0',
         'a'..='f' => 10 + (c as u8) - b'a',
@@ -254,6 +254,7 @@ fn parse_languish_tables(js: &str) -> Result<LanguishData> {
                 .ok_or_else(|| anyhow!("Languish: items.keys missing"))?,
         )?,
         rows: table_rows(
+            "items",
             items_v
                 .get("rows")
                 .ok_or_else(|| anyhow!("Languish: items.rows missing"))?,
@@ -266,6 +267,7 @@ fn parse_languish_tables(js: &str) -> Result<LanguishData> {
                 .ok_or_else(|| anyhow!("Languish: sums.keys missing"))?,
         )?,
         rows: table_rows(
+            "sums",
             sums_v
                 .get("rows")
                 .ok_or_else(|| anyhow!("Languish: sums.rows missing"))?,
@@ -284,11 +286,17 @@ fn table_keys(v: &serde_json::Value) -> Result<Vec<String>> {
         .collect())
 }
 
-fn table_rows(v: &serde_json::Value) -> Result<Vec<Vec<serde_json::Value>>> {
+fn table_rows(table_name: &str, v: &serde_json::Value) -> Result<Vec<Vec<serde_json::Value>>> {
     let rows = v
         .as_array()
-        .ok_or_else(|| anyhow!("expected array for rows"))?;
-    Ok(rows.iter().map(|r| r.as_array().unwrap().clone()).collect())
+        .ok_or_else(|| anyhow!("expected array for {table_name} rows"))?;
+    let mut parsed = Vec::with_capacity(rows.len());
+    for row in rows {
+        if let Some(values) = row.as_array() {
+            parsed.push(values.clone());
+        }
+    }
+    Ok(parsed)
 }
 
 fn collect_sorted_dates(sums: &Table) -> Result<Vec<String>> {
@@ -319,12 +327,15 @@ fn build_sums_by_date(sums: &Table) -> Result<FxHashMap<String, MetricsRaw>> {
     let idx_so = index_of(&sums.keys, "soQuestions")?;
     let idx_stars = index_of(&sums.keys, "stars")?;
     for row in &sums.rows {
-        let date = row[idx_date].as_str().unwrap_or("").to_string();
+        let date = match row.get(idx_date).and_then(|value| value.as_str()) {
+            Some(value) => value.to_string(),
+            None => continue,
+        };
         let m = MetricsRaw {
-            issues: as_f64(&row[idx_issues]),
-            pulls: as_f64(&row[idx_pulls]),
-            so_questions: as_f64(&row[idx_so]),
-            stars: as_f64(&row[idx_stars]),
+            issues: row.get(idx_issues).map_or(0.0, as_f64),
+            pulls: row.get(idx_pulls).map_or(0.0, as_f64),
+            so_questions: row.get(idx_so).map_or(0.0, as_f64),
+            stars: row.get(idx_stars).map_or(0.0, as_f64),
         };
         map.insert(date, m);
     }
@@ -342,17 +353,23 @@ fn build_items_by_name_date(
     let idx_so = index_of(&items.keys, "soQuestions")?;
     let idx_stars = index_of(&items.keys, "stars")?;
     for row in &items.rows {
-        let name = row[idx_name].as_str().unwrap_or("").to_string();
-        let date = row[idx_date].as_str().unwrap_or("").to_string();
+        let name = match row.get(idx_name).and_then(|value| value.as_str()) {
+            Some(value) => value.to_string(),
+            None => continue,
+        };
+        let date = match row.get(idx_date).and_then(|value| value.as_str()) {
+            Some(value) => value.to_string(),
+            None => continue,
+        };
         if date.as_str() < "2012Q1" {
             // Match Languish filtering baseline
             continue;
         }
         let m = MetricsRaw {
-            issues: as_f64(&row[idx_issues]),
-            pulls: as_f64(&row[idx_pulls]),
-            so_questions: as_f64(&row[idx_so]),
-            stars: as_f64(&row[idx_stars]),
+            issues: row.get(idx_issues).map_or(0.0, as_f64),
+            pulls: row.get(idx_pulls).map_or(0.0, as_f64),
+            so_questions: row.get(idx_so).map_or(0.0, as_f64),
+            stars: row.get(idx_stars).map_or(0.0, as_f64),
         };
         map.entry(name).or_default().insert(date, m);
     }
