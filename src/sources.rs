@@ -193,6 +193,21 @@ fn language_aliases() -> &'static FxHashMap<&'static str, &'static str> {
             ("VBA", "VBA/VBS"),
             ("ABAP", "Abap"),
             ("(Visual) FoxPro", "FoxPro"),
+            ("C Sharp", "C#"),
+            ("Csharp", "C#"),
+            ("C-Sharp", "C#"),
+            ("F Sharp", "F#"),
+            ("Fsharp", "F#"),
+            ("F-Sharp", "F#"),
+            ("Javascript", "JavaScript"),
+            ("Java Script", "JavaScript"),
+            ("JS", "JavaScript"),
+            ("Typescript", "TypeScript"),
+            ("Type Script", "TypeScript"),
+            ("TS", "TypeScript"),
+            ("Objective C", "Objective-C"),
+            ("ObjectiveC", "Objective-C"),
+            ("ObjC", "Objective-C"),
         ]
         .into_iter()
         .collect()
