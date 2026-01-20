@@ -20,7 +20,7 @@ use tokio::time::sleep;
 const MAX_RETRIES: usize = 3;
 
 #[derive(Debug)]
-pub(super) struct RawEntry {
+pub struct RawEntry {
     pub lang: String,
     pub rank: Option<u32>,
     pub share: f64,
@@ -35,7 +35,7 @@ struct AggregatedEntry {
     trend_seen: bool,
 }
 
-pub(super) async fn fetch_text_with_retry(client: &Client, url: &str) -> Result<String> {
+pub async fn fetch_text_with_retry(client: &Client, url: &str) -> Result<String> {
     send_with_retry(client, url)
         .await?
         .text()
@@ -43,7 +43,7 @@ pub(super) async fn fetch_text_with_retry(client: &Client, url: &str) -> Result<
         .with_context(|| format!("failed to read response body from {url}"))
 }
 
-pub(super) async fn fetch_bytes_with_retry(client: &Client, url: &str) -> Result<Vec<u8>> {
+pub async fn fetch_bytes_with_retry(client: &Client, url: &str) -> Result<Vec<u8>> {
     let bytes = send_with_retry(client, url)
         .await?
         .bytes()
@@ -106,23 +106,27 @@ fn describe_error(error: &anyhow::Error) -> String {
     }
 }
 
-pub(super) fn aggregate_entries(entries: Vec<RawEntry>) -> Vec<RankingEntry> {
+pub fn aggregate_entries(entries: Vec<RawEntry>) -> Vec<RankingEntry> {
     let alias_map = language_aliases();
     let mut aggregated: FxHashMap<String, AggregatedEntry> = FxHashMap::default();
 
     for entry in entries {
         let trimmed = entry.lang.trim();
-        let normalized = alias_map.get(trimmed).copied().unwrap_or(trimmed);
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lookup_key = normalize_alias_key(trimmed);
+        let normalized = alias_map
+            .get(lookup_key.as_str())
+            .copied()
+            .unwrap_or(trimmed);
         if normalized.is_empty() {
             continue;
         }
         let agg = aggregated.entry(normalized.to_owned()).or_default();
         agg.share_sum += entry.share;
         if let Some(rank) = entry.rank {
-            agg.min_rank = Some(match agg.min_rank {
-                None => rank,
-                Some(existing) => existing.min(rank),
-            });
+            agg.min_rank = Some(agg.min_rank.map_or(rank, |existing| existing.min(rank)));
         }
         if let Some(trend) = entry.trend {
             agg.trend_sum += trend;
@@ -148,7 +152,7 @@ pub(super) fn aggregate_entries(entries: Vec<RawEntry>) -> Vec<RankingEntry> {
     result
 }
 
-pub(super) fn extract_cell_text(cell: ElementRef<'_>) -> String {
+pub fn extract_cell_text(cell: ElementRef<'_>) -> String {
     cell.text()
         .map(str::trim)
         .filter(|chunk| !chunk.is_empty())
@@ -156,7 +160,7 @@ pub(super) fn extract_cell_text(cell: ElementRef<'_>) -> String {
         .join(" ")
 }
 
-pub(super) fn parse_u32(value: &str) -> Option<u32> {
+pub fn parse_u32(value: &str) -> Option<u32> {
     value
         .chars()
         .filter(char::is_ascii_digit)
@@ -165,7 +169,7 @@ pub(super) fn parse_u32(value: &str) -> Option<u32> {
         .ok()
 }
 
-pub(super) fn parse_percent(value: &str) -> Option<f64> {
+pub fn parse_percent(value: &str) -> Option<f64> {
     let trimmed = value.trim().trim_end_matches('%').trim();
     if trimmed.is_empty() {
         return None;
@@ -181,33 +185,53 @@ pub(super) fn parse_percent(value: &str) -> Option<f64> {
     cleaned.parse::<f64>().ok()
 }
 
+fn normalize_alias_key(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        out.extend(ch.to_lowercase());
+    }
+    out
+}
+
 fn language_aliases() -> &'static FxHashMap<&'static str, &'static str> {
     static LANGUAGE_ALIASES: OnceLock<FxHashMap<&'static str, &'static str>> = OnceLock::new();
     LANGUAGE_ALIASES.get_or_init(|| {
         [
-            ("Delphi/Object Pascal", "Delphi/Pascal"),
-            ("MATLAB", "Matlab"),
-            ("Cobol", "COBOL"),
-            ("Powershell", "PowerShell"),
-            ("VBScript", "VBA/VBS"),
-            ("VBA", "VBA/VBS"),
-            ("ABAP", "Abap"),
-            ("(Visual) FoxPro", "FoxPro"),
-            ("C Sharp", "C#"),
-            ("Csharp", "C#"),
-            ("C-Sharp", "C#"),
-            ("F Sharp", "F#"),
-            ("Fsharp", "F#"),
-            ("F-Sharp", "F#"),
-            ("Javascript", "JavaScript"),
-            ("Java Script", "JavaScript"),
-            ("JS", "JavaScript"),
-            ("Typescript", "TypeScript"),
-            ("Type Script", "TypeScript"),
-            ("TS", "TypeScript"),
-            ("Objective C", "Objective-C"),
-            ("ObjectiveC", "Objective-C"),
-            ("ObjC", "Objective-C"),
+            ("delphi/objectpascal", "Delphi/Pascal"),
+            ("matlab", "Matlab"),
+            ("cobol", "COBOL"),
+            ("powershell", "PowerShell"),
+            ("vbscript", "VBA/VBS"),
+            ("vba", "VBA/VBS"),
+            ("abap", "Abap"),
+            ("(visual)foxpro", "FoxPro"),
+            ("c#", "C#"),
+            ("csharp", "C#"),
+            ("c-sharp", "C#"),
+            ("f#", "F#"),
+            ("fsharp", "F#"),
+            ("f-sharp", "F#"),
+            ("javascript", "JavaScript"),
+            ("js", "JavaScript"),
+            ("node", "JavaScript"),
+            ("node.js", "JavaScript"),
+            ("nodejs", "JavaScript"),
+            ("typescript", "TypeScript"),
+            ("ts", "TypeScript"),
+            ("objective-c", "Objective-C"),
+            ("objectivec", "Objective-C"),
+            ("obj-c", "Objective-C"),
+            ("objc", "Objective-C"),
+            ("golang", "Go"),
+            ("go", "Go"),
+            ("vb", "Visual Basic"),
+            ("vb.net", "Visual Basic"),
+            ("vbnet", "Visual Basic"),
+            ("visualbasic", "Visual Basic"),
+            ("visualbasic.net", "Visual Basic"),
         ]
         .into_iter()
         .collect()
