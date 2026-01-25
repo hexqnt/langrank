@@ -1,0 +1,41 @@
+name: Deploy to Cloudflare Pages
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * *"   # ежедневно 02:00 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-pages
+  cancel-in-progress: true
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build report
+        run: |
+          rm -rf dist
+          cargo run --release -- \
+            --save-html dist/index.html \
+            --save-rankings dist/rankings.csv \
+            --save-schulze dist/schulze_rankings.csv \
+            --save-benchmarks dist/benchmarksgame.csv \
+            --full-output
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name ${{ vars.CF_PAGES_PROJECT }}
