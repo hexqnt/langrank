@@ -2,7 +2,7 @@ use crate::cli::Cli;
 use crate::progress::{ProgressState, Stage, run_with_spinner};
 use crate::report::{HtmlReportContext, HtmlReportPaths, save_html_report};
 use crate::sources::{
-    download_benchmark_data, fetch_languish, fetch_pypl, fetch_tiobe, load_benchmark_stats,
+    download_benchmark_data, fetch_languish, fetch_pypl, fetch_tiobe, load_benchmark_scores,
 };
 use crate::summary::{SummaryContext, SummaryPaths, print_summary};
 use anyhow::{Context, Result, anyhow};
@@ -120,24 +120,24 @@ async fn main() -> Result<()> {
         save_benchmarks_csv(&bench_bytes, path.as_path()).await?;
     }
 
-    let benchmark_stats = if let Some(progress) = progress.as_ref() {
+    let benchmark_scores = if let Some(progress) = progress.as_ref() {
         run_with_spinner(
             progress,
             Stage::Compute,
             "Compute benchmarks",
-            load_benchmark_stats(bench_bytes),
+            load_benchmark_scores(bench_bytes),
         )
         .await?
     } else {
-        load_benchmark_stats(bench_bytes).await?
+        load_benchmark_scores(bench_bytes).await?
     };
     ensure_min_entries(
         "Benchmarks Game",
-        benchmark_stats.len(),
+        benchmark_scores.len(),
         MIN_BENCHMARK_LANGUAGES,
     )?;
-    let benchmark_lang_count = benchmark_stats.len();
-    let schulze_records = compute_schulze_records(&tiobe, &pypl, &languish, &benchmark_stats)?;
+    let benchmark_lang_count = benchmark_scores.len();
+    let schulze_records = compute_schulze_records(&tiobe, &pypl, &languish, &benchmark_scores)?;
     if let Some(path) = save_schulze.as_ref() {
         save_schulze_csv(&schulze_records, path.as_path()).await?;
     }
@@ -319,7 +319,7 @@ pub(crate) struct SchulzeRecord {
     languish_rank: Option<u32>,
     languish_share: f64,
     languish_trend: Option<f64>,
-    benchmark_elapsed: Option<f64>,
+    benchmark_score: Option<f64>,
     schulze_wins: usize,
 }
 
@@ -395,7 +395,7 @@ fn compute_schulze_records(
             languish_rank: languish_entry.and_then(|entry| entry.rank),
             languish_share: languish_entry.map_or(0.0, |entry| entry.share),
             languish_trend: languish_entry.and_then(|entry| entry.trend),
-            benchmark_elapsed: bench_value,
+            benchmark_score: bench_value,
             schulze_wins: wins,
         });
     }
@@ -487,13 +487,7 @@ fn limit_languages(
             + sources.languish.share(lang_ref);
         let perf_component = sources
             .benchmark_value(lang_ref)
-            .and_then(|value| {
-                if value.is_finite() && value > 0.0 {
-                    Some(1.0 / value)
-                } else {
-                    None
-                }
-            })
+            .filter(|value| value.is_finite() && *value > 0.0)
             .unwrap_or(0.0);
         scored.push((source_count, popularity_score, perf_component, lang));
     }
@@ -539,14 +533,8 @@ fn build_ballots(languages: &[String], sources: &RankingSources<'_>) -> Vec<Vec<
     let languish_order = order_by_metric(languages, |lang| sources.languish.share(lang), false);
     let performance_order = order_by_metric(
         languages,
-        |lang| {
-            sources
-                .benchmark
-                .get(lang)
-                .copied()
-                .unwrap_or(f64::INFINITY)
-        },
-        true,
+        |lang| sources.benchmark.get(lang).copied().unwrap_or(0.0),
+        false,
     );
 
     vec![tiobe_order, pypl_order, languish_order, performance_order]
@@ -673,11 +661,6 @@ fn combined_score(lang: &str, sources: &RankingSources<'_>) -> f64 {
     let tiobe_share = sources.tiobe.share(lang);
     let pypl_share = sources.pypl.share(lang);
     let languish_share = sources.languish.share(lang);
-    let perf = sources.benchmark_value(lang).unwrap_or(f64::INFINITY);
-    let perf_component = if perf > 0.0 && perf.is_finite() {
-        1.0 / perf
-    } else {
-        0.0
-    };
+    let perf_component = sources.benchmark_value(lang).unwrap_or(0.0);
     tiobe_share + pypl_share + languish_share + perf_component
 }

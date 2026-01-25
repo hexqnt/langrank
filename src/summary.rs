@@ -108,7 +108,7 @@ fn print_schulze_table(records: &[SchulzeRecord], full_output: bool) -> usize {
 
 fn print_full_schulze_table(records: &[SchulzeRecord]) -> usize {
     let header = format!(
-        "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>8} | {:>4}",
+        "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>9} | {:>4}",
         "Pos",
         "Language",
         "T Rank",
@@ -120,10 +120,10 @@ fn print_full_schulze_table(records: &[SchulzeRecord]) -> usize {
         "L Rank",
         "L%",
         "L Trend",
-        "Perf(s)",
+        "Perf(rel)",
         "Wins"
     );
-    let separator = "----+---------------+--------+--------+---------+--------+--------+---------+--------+--------+---------+--------+------";
+    let separator = "----+---------------+--------+--------+---------+--------+--------+---------+--------+--------+---------+---------+------";
     let mut max_width = header.len().max(separator.len());
     println!("{}", header.bold().bright_white());
     println!("{}", separator.bright_black());
@@ -144,9 +144,9 @@ fn print_full_schulze_table(records: &[SchulzeRecord]) -> usize {
         let pypl_trend = format_trend(record.pypl_trend);
         let languish_share = format!("{:.2}", record.languish_share);
         let languish_trend = format_trend(record.languish_trend);
-        let perf = format_perf(record.benchmark_elapsed);
+        let perf = format_perf(record.benchmark_score);
         let line = format!(
-            "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>8} | {:>4}",
+            "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>9} | {:>4}",
             record.position,
             record.lang,
             tiobe_rank,
@@ -169,15 +169,15 @@ fn print_full_schulze_table(records: &[SchulzeRecord]) -> usize {
 }
 
 fn print_compact_schulze_table(records: &[SchulzeRecord]) -> usize {
-    let header = "Pos | Language      | TIOBE% | PYPL% | LANG% | Perf(s) | Wins";
-    let separator = "----+---------------+--------+-------+------+---------+------";
+    let header = "Pos | Language      | TIOBE% | PYPL% | LANG% | Perf(rel) | Wins";
+    let separator = "----+---------------+--------+-------+------+-----------+------";
     let mut max_width = header.len().max(separator.len());
     println!("{}", header.bold().bright_white());
     println!("{}", separator.bright_black());
     for record in records.iter().take(10) {
-        let perf = format_perf(record.benchmark_elapsed);
+        let perf = format_perf(record.benchmark_score);
         let line = format!(
-            "{:>3} | {:<13} | {:>6.2} | {:>5.2} | {:>5.2} | {:>7} | {:>4}",
+            "{:>3} | {:<13} | {:>6.2} | {:>5.2} | {:>5.2} | {:>9} | {:>4}",
             record.position,
             record.lang,
             record.tiobe_share,

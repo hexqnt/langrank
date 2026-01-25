@@ -3,7 +3,7 @@ pub mod languish;
 pub mod pypl;
 pub mod tiobe;
 
-pub use benchmarks::{download_benchmark_data, load_benchmark_stats};
+pub use benchmarks::{download_benchmark_data, load_benchmark_scores};
 pub use languish::fetch_languish;
 pub use pypl::fetch_pypl;
 pub use tiobe::fetch_tiobe;
@@ -107,23 +107,13 @@ fn describe_error(error: &anyhow::Error) -> String {
 }
 
 pub fn aggregate_entries(entries: Vec<RawEntry>) -> Vec<RankingEntry> {
-    let alias_map = language_aliases();
     let mut aggregated: FxHashMap<String, AggregatedEntry> = FxHashMap::default();
 
     for entry in entries {
-        let trimmed = entry.lang.trim();
-        if trimmed.is_empty() {
+        let Some(normalized) = canonicalize_language(entry.lang.as_str()) else {
             continue;
-        }
-        let lookup_key = normalize_alias_key(trimmed);
-        let normalized = alias_map
-            .get(lookup_key.as_str())
-            .copied()
-            .unwrap_or(trimmed);
-        if normalized.is_empty() {
-            continue;
-        }
-        let agg = aggregated.entry(normalized.to_owned()).or_default();
+        };
+        let agg = aggregated.entry(normalized).or_default();
         agg.share_sum += entry.share;
         if let Some(rank) = entry.rank {
             agg.min_rank = Some(agg.min_rank.map_or(rank, |existing| existing.min(rank)));
@@ -196,9 +186,25 @@ fn normalize_alias_key(input: &str) -> String {
     out
 }
 
-fn language_aliases() -> &'static FxHashMap<&'static str, &'static str> {
-    static LANGUAGE_ALIASES: OnceLock<FxHashMap<&'static str, &'static str>> = OnceLock::new();
-    LANGUAGE_ALIASES.get_or_init(|| {
+pub fn canonicalize_language(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lookup_key = normalize_alias_key(trimmed);
+    let alias_map = canonical_aliases();
+    if let Some(&alias) = alias_map.get(lookup_key.as_str()) {
+        if alias.is_empty() {
+            return None;
+        }
+        return Some(alias.to_string());
+    }
+    Some(trimmed.to_string())
+}
+
+fn canonical_aliases() -> &'static FxHashMap<&'static str, &'static str> {
+    static CANONICAL_ALIASES: OnceLock<FxHashMap<&'static str, &'static str>> = OnceLock::new();
+    CANONICAL_ALIASES.get_or_init(|| {
         [
             ("delphi/objectpascal", "Delphi/Pascal"),
             ("matlab", "Matlab"),
@@ -208,9 +214,12 @@ fn language_aliases() -> &'static FxHashMap<&'static str, &'static str> {
             ("vba", "VBA/VBS"),
             ("abap", "Abap"),
             ("(visual)foxpro", "FoxPro"),
+            ("c", "C"),
             ("c#", "C#"),
             ("csharp", "C#"),
             ("c-sharp", "C#"),
+            ("c++", "C++"),
+            ("c/c++", "C/C++"),
             ("f#", "F#"),
             ("fsharp", "F#"),
             ("f-sharp", "F#"),
@@ -227,11 +236,49 @@ fn language_aliases() -> &'static FxHashMap<&'static str, &'static str> {
             ("objc", "Objective-C"),
             ("golang", "Go"),
             ("go", "Go"),
+            ("cpp", "C++"),
             ("vb", "Visual Basic"),
             ("vb.net", "Visual Basic"),
             ("vbnet", "Visual Basic"),
             ("visualbasic", "Visual Basic"),
             ("visualbasic.net", "Visual Basic"),
+            // Benchmarks Game aliases and runtimes.
+            ("chapel", "Chapel"),
+            ("clang", "C/C++"),
+            ("csharpaot", "C#"),
+            ("csharpcore", "C#"),
+            ("dartexe", "Dart"),
+            ("dartjit", "Dart"),
+            ("erlang", "Erlang"),
+            ("fpascal", "Free Pascal"),
+            ("fsharpcore", "F#"),
+            ("gcc", "C/C++"),
+            ("ghc", "Haskell"),
+            ("gnat", "Ada"),
+            ("gpp", "C/C++"),
+            ("graalvm", "Graal"),
+            ("icx", "C/C++"),
+            ("ifc", "Fortran"),
+            ("ifx", "Fortran"),
+            ("java", "Java"),
+            ("javaxint", "Java"),
+            ("julia", "Julia"),
+            ("lua", "Lua"),
+            ("micropython", "Python"),
+            ("mri", "Ruby"),
+            ("ocaml", "OCaml"),
+            ("openj9", "Java"),
+            ("perl", "Perl"),
+            ("pharo", "Smalltalk"),
+            ("php", "PHP"),
+            ("python3", "Python"),
+            ("racket", "Racket"),
+            ("ruby", "Ruby"),
+            ("rust", "Rust"),
+            ("sbcl", "Lisp"),
+            ("swift", "Swift"),
+            ("toit", "Toit"),
+            ("vw", ""),
         ]
         .into_iter()
         .collect()

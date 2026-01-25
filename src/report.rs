@@ -182,7 +182,7 @@ fn render_full_table_header() -> String {
     header.push_str("<th>L Rank</th>");
     header.push_str("<th>L Share</th>");
     header.push_str("<th>L Trend</th>");
-    header.push_str("<th>Perf (s)</th>");
+    header.push_str("<th>Perf (rel)</th>");
     header.push_str("<th>Wins</th>");
     header.push_str("</tr></thead>\n");
     header
@@ -196,7 +196,7 @@ fn render_compact_table_header() -> String {
     header.push_str("<th>TIOBE %</th>");
     header.push_str("<th>PYPL %</th>");
     header.push_str("<th>Languish %</th>");
-    header.push_str("<th>Perf (s)</th>");
+    header.push_str("<th>Perf (rel)</th>");
     header.push_str("<th>Wins</th>");
     header.push_str("</tr></thead>\n");
     header
@@ -243,7 +243,7 @@ fn render_full_table_rows(records: &[SchulzeRecord]) -> String {
         ));
         rows.push_str(&format!(
             "<td class=\"num\">{}</td>",
-            format_optional_float(record.benchmark_elapsed)
+            format_optional_float(record.benchmark_score)
         ));
 
         rows.push_str(&format!("<td class=\"num\">{}</td>", record.schulze_wins));
@@ -269,7 +269,7 @@ fn render_compact_table_rows(records: &[SchulzeRecord], limit: usize) -> String 
         ));
         rows.push_str(&format!(
             "<td class=\"num\">{}</td>",
-            format_optional_float(record.benchmark_elapsed)
+            format_optional_float(record.benchmark_score)
         ));
         rows.push_str(&format!("<td class=\"num\">{}</td>", record.schulze_wins));
         rows.push_str("</tr>\n");
