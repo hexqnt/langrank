@@ -167,8 +167,9 @@ pub fn parse_percent(value: &str) -> Option<f64> {
         return None;
     }
     let cleaned = trimmed
+        .replace(['\u{2212}', '\u{2013}', '\u{2014}'], "-")
         .replace(',', ".")
-        .replace(['+', '\u{00a0}'], "")
+        .replace(['+', '\u{00a0}', '\u{202f}'], "")
         .trim()
         .to_string();
     if cleaned.is_empty() {

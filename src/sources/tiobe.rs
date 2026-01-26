@@ -25,11 +25,22 @@ pub async fn fetch_tiobe(client: &Client) -> Result<Vec<RankingEntry>> {
     if let Some(table) = document.select(&table_selector).next() {
         for row in table.select(&row_selector).skip(1) {
             let cells: Vec<String> = row.select(&cell_selector).map(extract_cell_text).collect();
-            if cells.len() > 6 {
+            if cells.len() >= 7 {
                 let rank = parse_u32(&cells[0]);
                 let lang = cells[4].clone();
                 let share = parse_percent(&cells[5]).unwrap_or(0.0);
                 let trend = parse_percent(&cells[6]);
+                entries.push(RawEntry {
+                    lang,
+                    rank,
+                    share,
+                    trend,
+                });
+            } else if cells.len() >= 6 {
+                let rank = parse_u32(&cells[0]);
+                let lang = cells[3].clone();
+                let share = parse_percent(&cells[4]).unwrap_or(0.0);
+                let trend = parse_percent(&cells[5]);
                 entries.push(RawEntry {
                     lang,
                     rank,

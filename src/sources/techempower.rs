@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow};
-use reqwest::Client;
+use reqwest::{Client, Url};
 use rustc_hash::FxHashMap;
 use scraper::{Html, Selector};
 use serde::Deserialize;
@@ -58,7 +58,7 @@ async fn latest_completed_run_id(client: &Client) -> Result<String> {
             continue;
         }
         let row_text = row.text().collect::<Vec<_>>().join(" ").to_lowercase();
-        if row_text.contains("completed") {
+        if is_completed_status(&row_text) {
             return Ok(run_id.to_string());
         }
     }
@@ -90,10 +90,34 @@ async fn results_url_for_run(client: &Client, run_id: &str) -> Result<String> {
 
 fn resolve_techempower_url(href: &str) -> String {
     if href.starts_with("http://") || href.starts_with("https://") {
-        href.to_string()
-    } else {
-        format!("{TFB_STATUS_URL}{href}")
+        return href.to_string();
     }
+    if let Ok(base) = Url::parse(TFB_STATUS_URL)
+        && let Ok(joined) = base.join(href)
+    {
+        return joined.to_string();
+    }
+    if href.starts_with('/') {
+        format!("{TFB_STATUS_URL}{href}")
+    } else {
+        format!("{TFB_STATUS_URL}/{href}")
+    }
+}
+
+fn is_completed_status(row_text: &str) -> bool {
+    let tokens: Vec<&str> = row_text
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect();
+    for (idx, token) in tokens.iter().enumerate() {
+        if *token == "completed" {
+            if idx > 0 && tokens[idx - 1] == "not" {
+                continue;
+            }
+            return true;
+        }
+    }
+    false
 }
 
 fn compute_language_scores(results: &TechempowerResults) -> Result<FxHashMap<String, f64>> {
