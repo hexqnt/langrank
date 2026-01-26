@@ -15,6 +15,7 @@ pub struct HtmlReportContext<'a> {
     pub(crate) pypl_count: usize,
     pub(crate) languish_count: usize,
     pub(crate) benchmark_lang_count: usize,
+    pub(crate) techempower_lang_count: usize,
     pub(crate) run_started_at: &'a DateTime<Local>,
     pub(crate) schulze_records: &'a [SchulzeRecord],
     pub(crate) full_output: bool,
@@ -137,6 +138,10 @@ fn render_html_report(context: &HtmlReportContext<'_>) -> String {
         "<div class=\"card\"><div class=\"card-label\">Benchmarks langs</div><div class=\"card-value\">{}</div></div>\n",
         context.benchmark_lang_count
     ));
+    html.push_str(&format!(
+        "<div class=\"card\"><div class=\"card-label\">TechEmpower langs</div><div class=\"card-value\">{}</div></div>\n",
+        context.techempower_lang_count
+    ));
     html.push_str("</section>\n");
 
     html.push_str("<section class=\"table-section\">\n");
@@ -162,7 +167,7 @@ fn render_html_report(context: &HtmlReportContext<'_>) -> String {
     html.push_str(&downloads);
 
     html.push_str("<footer class=\"footer\">\n");
-    html.push_str("<div>Sources: TIOBE, PYPL, Languish, Benchmarks Game.</div>\n");
+    html.push_str("<div>Sources: TIOBE, PYPL, Languish, Benchmarks Game, TechEmpower.</div>\n");
     html.push_str("</footer>\n");
     html.push_str("</div>\n</body>\n</html>\n");
     html
@@ -182,7 +187,9 @@ fn render_full_table_header() -> String {
     header.push_str("<th>L Rank</th>");
     header.push_str("<th>L Share</th>");
     header.push_str("<th>L Trend</th>");
-    header.push_str("<th>Perf (rel)</th>");
+    header.push_str("<th>BG</th>");
+    header.push_str("<th>TE</th>");
+    header.push_str("<th>Perf</th>");
     header.push_str("<th>Wins</th>");
     header.push_str("</tr></thead>\n");
     header
@@ -196,7 +203,9 @@ fn render_compact_table_header() -> String {
     header.push_str("<th>TIOBE %</th>");
     header.push_str("<th>PYPL %</th>");
     header.push_str("<th>Languish %</th>");
-    header.push_str("<th>Perf (rel)</th>");
+    header.push_str("<th>BG</th>");
+    header.push_str("<th>TE</th>");
+    header.push_str("<th>Perf</th>");
     header.push_str("<th>Wins</th>");
     header.push_str("</tr></thead>\n");
     header
@@ -245,6 +254,12 @@ fn render_full_table_rows(records: &[SchulzeRecord]) -> String {
             "<td class=\"num\">{}</td>",
             format_optional_float(record.benchmark_score)
         ));
+        rows.push_str(&format!(
+            "<td class=\"num\">{}</td>",
+            format_optional_float(record.techempower_score)
+        ));
+        let perf = format_perf_combined(record);
+        rows.push_str(&format!("<td class=\"num\">{}</td>", perf));
 
         rows.push_str(&format!("<td class=\"num\">{}</td>", record.schulze_wins));
         rows.push_str("</tr>\n");
@@ -271,6 +286,12 @@ fn render_compact_table_rows(records: &[SchulzeRecord], limit: usize) -> String 
             "<td class=\"num\">{}</td>",
             format_optional_float(record.benchmark_score)
         ));
+        rows.push_str(&format!(
+            "<td class=\"num\">{}</td>",
+            format_optional_float(record.techempower_score)
+        ));
+        let perf = format_perf_combined(record);
+        rows.push_str(&format!("<td class=\"num\">{}</td>", perf));
         rows.push_str(&format!("<td class=\"num\">{}</td>", record.schulze_wins));
         rows.push_str("</tr>\n");
     }
@@ -357,6 +378,14 @@ fn format_optional_float(value: Option<f64>) -> String {
     match value {
         Some(v) if v.is_finite() => format!("{v:.2}"),
         _ => "-".to_string(),
+    }
+}
+
+fn format_perf_combined(record: &SchulzeRecord) -> String {
+    if record.benchmark_score.is_none() && record.techempower_score.is_none() {
+        "-".to_string()
+    } else {
+        format!("{:.2}", record.perf_score)
     }
 }
 

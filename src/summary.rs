@@ -16,6 +16,7 @@ pub struct SummaryContext<'a> {
     pub(crate) pypl_count: usize,
     pub(crate) languish_count: usize,
     pub(crate) benchmark_lang_count: usize,
+    pub(crate) techempower_lang_count: usize,
     pub(crate) run_started_at: &'a DateTime<Local>,
     pub(crate) paths: SummaryPaths<'a>,
     pub(crate) schulze_records: &'a [SchulzeRecord],
@@ -52,12 +53,13 @@ fn print_summary_header(context: &SummaryContext<'_>) {
             .bright_white()
     );
     println!(
-        "{} {} | {} | {} | {}",
+        "{} {} | {} | {} | {} | {}",
         "Sources".bright_yellow().bold(),
         format!("TIOBE: {}", context.tiobe_count).bright_white(),
         format!("PYPL: {}", context.pypl_count).bright_white(),
         format!("Languish: {}", context.languish_count).bright_white(),
-        format!("Benchmarks: {}", context.benchmark_lang_count).bright_white()
+        format!("Benchmarks: {}", context.benchmark_lang_count).bright_white(),
+        format!("TechEmpower: {}", context.techempower_lang_count).bright_white()
     );
 }
 
@@ -108,7 +110,7 @@ fn print_schulze_table(records: &[SchulzeRecord], full_output: bool) -> usize {
 
 fn print_full_schulze_table(records: &[SchulzeRecord]) -> usize {
     let header = format!(
-        "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>9} | {:>4}",
+        "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>6} | {:>4}",
         "Pos",
         "Language",
         "T Rank",
@@ -120,10 +122,12 @@ fn print_full_schulze_table(records: &[SchulzeRecord]) -> usize {
         "L Rank",
         "L%",
         "L Trend",
-        "Perf(rel)",
+        "BG",
+        "TE",
+        "Perf",
         "Wins"
     );
-    let separator = "----+---------------+--------+--------+---------+--------+--------+---------+--------+--------+---------+---------+------";
+    let separator = "----+---------------+--------+--------+---------+--------+--------+---------+--------+--------+---------+------+------+------+------+";
     let mut max_width = header.len().max(separator.len());
     println!("{}", header.bold().bright_white());
     println!("{}", separator.bright_black());
@@ -144,9 +148,17 @@ fn print_full_schulze_table(records: &[SchulzeRecord]) -> usize {
         let pypl_trend = format_trend(record.pypl_trend);
         let languish_share = format!("{:.2}", record.languish_share);
         let languish_trend = format_trend(record.languish_trend);
-        let perf = format_perf(record.benchmark_score);
+        let bg = format_perf(record.benchmark_score);
+        let te = record
+            .techempower_score
+            .map_or_else(|| "-".to_string(), |value| format!("{value:.2}"));
+        let perf = if record.benchmark_score.is_none() && record.techempower_score.is_none() {
+            "-".to_string()
+        } else {
+            format!("{:.2}", record.perf_score)
+        };
         let line = format!(
-            "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>9} | {:>4}",
+            "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>6} | {:>4}",
             record.position,
             record.lang,
             tiobe_rank,
@@ -158,6 +170,8 @@ fn print_full_schulze_table(records: &[SchulzeRecord]) -> usize {
             languish_rank,
             languish_share,
             languish_trend,
+            bg,
+            te,
             perf,
             record.schulze_wins
         );
@@ -169,20 +183,30 @@ fn print_full_schulze_table(records: &[SchulzeRecord]) -> usize {
 }
 
 fn print_compact_schulze_table(records: &[SchulzeRecord]) -> usize {
-    let header = "Pos | Language      | TIOBE% | PYPL% | LANG% | Perf(rel) | Wins";
-    let separator = "----+---------------+--------+-------+------+-----------+------";
+    let header = "Pos | Language      | TIOBE% | PYPL% | LANG% | BG | TE | Perf | Wins";
+    let separator = "----+---------------+--------+-------+------+----+----+------+------";
     let mut max_width = header.len().max(separator.len());
     println!("{}", header.bold().bright_white());
     println!("{}", separator.bright_black());
     for record in records.iter().take(10) {
-        let perf = format_perf(record.benchmark_score);
+        let bg = format_perf(record.benchmark_score);
+        let te = record
+            .techempower_score
+            .map_or_else(|| "-".to_string(), |value| format!("{value:.2}"));
+        let perf = if record.benchmark_score.is_none() && record.techempower_score.is_none() {
+            "-".to_string()
+        } else {
+            format!("{:.2}", record.perf_score)
+        };
         let line = format!(
-            "{:>3} | {:<13} | {:>6.2} | {:>5.2} | {:>5.2} | {:>9} | {:>4}",
+            "{:>3} | {:<13} | {:>6.2} | {:>5.2} | {:>5.2} | {:>4} | {:>4} | {:>4} | {:>4}",
             record.position,
             record.lang,
             record.tiobe_share,
             record.pypl_share,
             record.languish_share,
+            bg,
+            te,
             perf,
             record.schulze_wins
         );

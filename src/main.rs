@@ -2,7 +2,8 @@ use crate::cli::Cli;
 use crate::progress::{ProgressState, Stage, run_with_spinner};
 use crate::report::{HtmlReportContext, HtmlReportPaths, save_html_report};
 use crate::sources::{
-    download_benchmark_data, fetch_languish, fetch_pypl, fetch_tiobe, load_benchmark_scores,
+    TECHEMPOWER_MAX_SCORE, download_benchmark_data, fetch_languish, fetch_pypl,
+    fetch_techempower, fetch_tiobe, load_benchmark_scores,
 };
 use crate::summary::{SummaryContext, SummaryPaths, print_summary};
 use anyhow::{Context, Result, anyhow};
@@ -11,7 +12,7 @@ use clap::Parser;
 use csv::Writer;
 use ndarray::{Array2, Zip};
 use reqwest::Client;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use std::cmp::Ordering;
 use std::io::IsTerminal;
@@ -29,8 +30,9 @@ mod summary;
 const HTTP_TIMEOUT_SECONDS: u64 = 20;
 const MIN_SOURCE_ENTRIES: usize = 10;
 const MIN_BENCHMARK_LANGUAGES: usize = 10;
+const MIN_TECHEMPOWER_LANGUAGES: usize = 10;
 const MIN_SOURCE_OVERLAP: usize = 3;
-const MAX_RANKED_LANGUAGES: usize = 30;
+const MAX_RANKED_LANGUAGES: usize = 0;
 #[derive(Debug, Serialize, Clone)]
 pub struct RankingEntry {
     pub lang: String,
@@ -76,26 +78,34 @@ async fn main() -> Result<()> {
         None
     };
 
-    let (tiobe, mut pypl, languish, bench_bytes) = if let Some(progress) = progress.as_ref() {
-        tokio::try_join!(
-            run_with_spinner(progress, Stage::Fetch, "TIOBE", fetch_tiobe(&client)),
-            run_with_spinner(progress, Stage::Fetch, "PYPL", fetch_pypl(&client)),
-            run_with_spinner(progress, Stage::Fetch, "Languish", fetch_languish(&client)),
-            run_with_spinner(
-                progress,
-                Stage::Fetch,
-                "Benchmarks",
-                download_benchmark_data(&client)
-            )
-        )?
-    } else {
-        tokio::try_join!(
-            fetch_tiobe(&client),
-            fetch_pypl(&client),
-            fetch_languish(&client),
-            download_benchmark_data(&client)
-        )?
-    };
+    let (tiobe, mut pypl, languish, bench_bytes, techempower_scores) =
+        if let Some(progress) = progress.as_ref() {
+            tokio::try_join!(
+                run_with_spinner(progress, Stage::Fetch, "TIOBE", fetch_tiobe(&client)),
+                run_with_spinner(progress, Stage::Fetch, "PYPL", fetch_pypl(&client)),
+                run_with_spinner(progress, Stage::Fetch, "Languish", fetch_languish(&client)),
+                run_with_spinner(
+                    progress,
+                    Stage::Fetch,
+                    "Benchmarks",
+                    download_benchmark_data(&client)
+                ),
+                run_with_spinner(
+                    progress,
+                    Stage::Fetch,
+                    "TechEmpower",
+                    fetch_techempower(&client)
+                )
+            )?
+        } else {
+            tokio::try_join!(
+                fetch_tiobe(&client),
+                fetch_pypl(&client),
+                fetch_languish(&client),
+                download_benchmark_data(&client),
+                fetch_techempower(&client)
+            )?
+        };
 
     let pypl_original_len = pypl.len();
     adjust_pypl_entries(&tiobe, &mut pypl);
@@ -136,8 +146,20 @@ async fn main() -> Result<()> {
         benchmark_scores.len(),
         MIN_BENCHMARK_LANGUAGES,
     )?;
+    ensure_min_entries(
+        "TechEmpower",
+        techempower_scores.len(),
+        MIN_TECHEMPOWER_LANGUAGES,
+    )?;
     let benchmark_lang_count = benchmark_scores.len();
-    let schulze_records = compute_schulze_records(&tiobe, &pypl, &languish, &benchmark_scores)?;
+    let techempower_lang_count = techempower_scores.len();
+    let schulze_records = compute_schulze_records(
+        &tiobe,
+        &pypl,
+        &languish,
+        &benchmark_scores,
+        &techempower_scores,
+    )?;
     if let Some(path) = save_schulze.as_ref() {
         save_schulze_csv(&schulze_records, path.as_path()).await?;
     }
@@ -148,6 +170,7 @@ async fn main() -> Result<()> {
             pypl_count: pypl_original_len,
             languish_count: languish.len(),
             benchmark_lang_count,
+            techempower_lang_count,
             run_started_at: &run_started_at,
             schulze_records: &schulze_records,
             full_output,
@@ -170,6 +193,7 @@ async fn main() -> Result<()> {
         pypl_count: pypl_original_len,
         languish_count: languish.len(),
         benchmark_lang_count,
+        techempower_lang_count,
         run_started_at: &run_started_at,
         paths: SummaryPaths {
             benchmarks: save_benchmarks.as_deref(),
@@ -320,6 +344,8 @@ pub(crate) struct SchulzeRecord {
     languish_share: f64,
     languish_trend: Option<f64>,
     benchmark_score: Option<f64>,
+    techempower_score: Option<f64>,
+    perf_score: f64,
     schulze_wins: usize,
 }
 
@@ -339,6 +365,7 @@ fn compute_schulze_records(
     pypl: &[RankingEntry],
     languish: &[RankingEntry],
     benchmark: &FxHashMap<String, f64>,
+    techempower: &FxHashMap<String, f64>,
 ) -> Result<Vec<SchulzeRecord>> {
     let tiobe_index = build_ranking_index(tiobe);
     let pypl_index = build_ranking_index(pypl);
@@ -357,8 +384,16 @@ fn compute_schulze_records(
             index: &languish_index,
         },
         benchmark,
+        techempower,
     };
-    let languages = collect_languages(tiobe, pypl, languish, benchmark, MIN_SOURCE_OVERLAP);
+    let languages = collect_languages(
+        tiobe,
+        pypl,
+        languish,
+        benchmark,
+        techempower,
+        MIN_SOURCE_OVERLAP,
+    );
     let languages = limit_languages(languages, &sources, MAX_RANKED_LANGUAGES);
     if languages.len() < 2 {
         return Err(anyhow!(
@@ -382,6 +417,8 @@ fn compute_schulze_records(
         let pypl_entry = sources.pypl.entry(lang);
         let languish_entry = sources.languish.entry(lang);
         let bench_value = sources.benchmark_value(lang);
+        let techempower_score = sources.techempower_value(lang);
+        let perf_score = sources.perf_score(lang);
 
         records.push(SchulzeRecord {
             position: position + 1,
@@ -396,6 +433,8 @@ fn compute_schulze_records(
             languish_share: languish_entry.map_or(0.0, |entry| entry.share),
             languish_trend: languish_entry.and_then(|entry| entry.trend),
             benchmark_score: bench_value,
+            techempower_score,
+            perf_score,
             schulze_wins: wins,
         });
     }
@@ -423,11 +462,27 @@ struct RankingSources<'a> {
     pypl: RankingSource<'a>,
     languish: RankingSource<'a>,
     benchmark: &'a FxHashMap<String, f64>,
+    techempower: &'a FxHashMap<String, f64>,
 }
 
 impl RankingSources<'_> {
     fn benchmark_value(&self, lang: &str) -> Option<f64> {
         self.benchmark.get(lang).copied()
+    }
+
+    fn techempower_value(&self, lang: &str) -> Option<f64> {
+        self.techempower.get(lang).copied()
+    }
+
+    fn perf_score(&self, lang: &str) -> f64 {
+        let bg = self.benchmark_value(lang).unwrap_or(0.0);
+        let te_raw = self.techempower_value(lang).unwrap_or(0.0);
+        let te_norm = if TECHEMPOWER_MAX_SCORE > 0.0 {
+            te_raw / TECHEMPOWER_MAX_SCORE
+        } else {
+            0.0
+        };
+        (bg + te_norm) / 2.0
     }
 }
 
@@ -444,6 +499,7 @@ fn collect_languages(
     pypl: &[RankingEntry],
     languish: &[RankingEntry],
     benchmark: &FxHashMap<String, f64>,
+    techempower: &FxHashMap<String, f64>,
     min_sources: usize,
 ) -> Vec<std::string::String> {
     let mut counts: FxHashMap<String, usize> = FxHashMap::default();
@@ -456,8 +512,15 @@ fn collect_languages(
     for entry in languish {
         *counts.entry(entry.lang.clone()).or_insert(0) += 1;
     }
+    let mut perf_langs: FxHashSet<&str> = FxHashSet::default();
     for lang in benchmark.keys() {
-        *counts.entry(lang.clone()).or_insert(0) += 1;
+        perf_langs.insert(lang.as_str());
+    }
+    for lang in techempower.keys() {
+        perf_langs.insert(lang.as_str());
+    }
+    for lang in perf_langs {
+        *counts.entry(lang.to_string()).or_insert(0) += 1;
     }
 
     let mut languages: Vec<String> = counts
@@ -485,10 +548,7 @@ fn limit_languages(
         let popularity_score = sources.tiobe.share(lang_ref)
             + sources.pypl.share(lang_ref)
             + sources.languish.share(lang_ref);
-        let perf_component = sources
-            .benchmark_value(lang_ref)
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .unwrap_or(0.0);
+        let perf_component = sources.perf_score(lang_ref);
         scored.push((source_count, popularity_score, perf_component, lang));
     }
 
@@ -521,7 +581,7 @@ fn count_sources(lang: &str, sources: &RankingSources<'_>) -> usize {
     if sources.languish.entry(lang).is_some() {
         count += 1;
     }
-    if sources.benchmark.contains_key(lang) {
+    if sources.benchmark.contains_key(lang) || sources.techempower.contains_key(lang) {
         count += 1;
     }
     count
@@ -531,11 +591,8 @@ fn build_ballots(languages: &[String], sources: &RankingSources<'_>) -> Vec<Vec<
     let tiobe_order = order_by_metric(languages, |lang| sources.tiobe.share(lang), false);
     let pypl_order = order_by_metric(languages, |lang| sources.pypl.share(lang), false);
     let languish_order = order_by_metric(languages, |lang| sources.languish.share(lang), false);
-    let performance_order = order_by_metric(
-        languages,
-        |lang| sources.benchmark.get(lang).copied().unwrap_or(0.0),
-        false,
-    );
+    let performance_order =
+        order_by_metric(languages, |lang| sources.perf_score(lang), false);
 
     vec![tiobe_order, pypl_order, languish_order, performance_order]
 }
@@ -661,6 +718,6 @@ fn combined_score(lang: &str, sources: &RankingSources<'_>) -> f64 {
     let tiobe_share = sources.tiobe.share(lang);
     let pypl_share = sources.pypl.share(lang);
     let languish_share = sources.languish.share(lang);
-    let perf_component = sources.benchmark_value(lang).unwrap_or(0.0);
+    let perf_component = sources.perf_score(lang);
     tiobe_share + pypl_share + languish_share + perf_component
 }

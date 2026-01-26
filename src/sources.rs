@@ -1,11 +1,13 @@
 pub mod benchmarks;
 pub mod languish;
 pub mod pypl;
+pub mod techempower;
 pub mod tiobe;
 
 pub use benchmarks::{download_benchmark_data, load_benchmark_scores};
 pub use languish::fetch_languish;
 pub use pypl::fetch_pypl;
+pub use techempower::{TECHEMPOWER_MAX_SCORE, fetch_techempower};
 pub use tiobe::fetch_tiobe;
 
 use crate::RankingEntry;
@@ -242,6 +244,32 @@ fn canonical_aliases() -> &'static FxHashMap<&'static str, &'static str> {
             ("vbnet", "Visual Basic"),
             ("visualbasic", "Visual Basic"),
             ("visualbasic.net", "Visual Basic"),
+            ("cfml", "CFML"),
+            ("clojure", "Clojure"),
+            ("commonlisp", "Lisp"),
+            ("crystal", "Crystal"),
+            ("d", "D"),
+            ("dart", "Dart"),
+            ("elixir", "Elixir"),
+            ("fortran", "Fortran"),
+            ("haskell", "Haskell"),
+            ("julia", "Julia"),
+            ("kotlin", "Kotlin"),
+            ("lua", "Lua"),
+            ("luau", "Luau"),
+            ("nim", "Nim"),
+            ("pascal", "Pascal"),
+            ("prolog", "Prolog"),
+            ("python", "Python"),
+            ("r", "R"),
+            ("ruby", "Ruby"),
+            ("rust", "Rust"),
+            ("scala", "Scala"),
+            ("swift", "Swift"),
+            ("ur", "Ur"),
+            ("v", "V"),
+            ("vala", "Vala"),
+            ("zig", "Zig"),
             // Benchmarks Game aliases and runtimes.
             ("chapel", "Chapel"),
             ("clang", "C/C++"),
@@ -262,8 +290,6 @@ fn canonical_aliases() -> &'static FxHashMap<&'static str, &'static str> {
             ("ifx", "Fortran"),
             ("java", "Java"),
             ("javaxint", "Java"),
-            ("julia", "Julia"),
-            ("lua", "Lua"),
             ("micropython", "Python"),
             ("mri", "Ruby"),
             ("ocaml", "OCaml"),
@@ -273,10 +299,7 @@ fn canonical_aliases() -> &'static FxHashMap<&'static str, &'static str> {
             ("php", "PHP"),
             ("python3", "Python"),
             ("racket", "Racket"),
-            ("ruby", "Ruby"),
-            ("rust", "Rust"),
             ("sbcl", "Lisp"),
-            ("swift", "Swift"),
             ("toit", "Toit"),
             ("vw", ""),
         ]
