@@ -2,8 +2,8 @@ use crate::cli::Cli;
 use crate::progress::{ProgressState, Stage, run_with_spinner};
 use crate::report::{HtmlReportContext, HtmlReportPaths, save_html_report};
 use crate::sources::{
-    TECHEMPOWER_MAX_SCORE, download_benchmark_data, fetch_languish, fetch_pypl,
-    fetch_techempower, fetch_tiobe, load_benchmark_scores,
+    TECHEMPOWER_MAX_SCORE, download_benchmark_data, fetch_languish, fetch_pypl, fetch_techempower,
+    fetch_tiobe, load_benchmark_scores,
 };
 use crate::summary::{SummaryContext, SummaryPaths, print_summary};
 use anyhow::{Context, Result, anyhow};
@@ -482,7 +482,7 @@ impl RankingSources<'_> {
         } else {
             0.0
         };
-        (bg + te_norm) / 2.0
+        f64::midpoint(bg, te_norm)
     }
 }
 
@@ -591,8 +591,7 @@ fn build_ballots(languages: &[String], sources: &RankingSources<'_>) -> Vec<Vec<
     let tiobe_order = order_by_metric(languages, |lang| sources.tiobe.share(lang), false);
     let pypl_order = order_by_metric(languages, |lang| sources.pypl.share(lang), false);
     let languish_order = order_by_metric(languages, |lang| sources.languish.share(lang), false);
-    let performance_order =
-        order_by_metric(languages, |lang| sources.perf_score(lang), false);
+    let performance_order = order_by_metric(languages, |lang| sources.perf_score(lang), false);
 
     vec![tiobe_order, pypl_order, languish_order, performance_order]
 }

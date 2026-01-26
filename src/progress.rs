@@ -79,9 +79,7 @@ impl ProgressState {
 }
 
 fn is_dumb_term() -> bool {
-    std::env::var("TERM")
-        .map(|term| term.eq_ignore_ascii_case("dumb"))
-        .unwrap_or(false)
+    std::env::var("TERM").is_ok_and(|term| term.eq_ignore_ascii_case("dumb"))
 }
 
 fn format_stage_message(stage: Stage, label: &str) -> String {

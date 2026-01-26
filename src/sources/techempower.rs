@@ -38,8 +38,8 @@ pub async fn fetch_techempower(client: &Client) -> Result<FxHashMap<String, f64>
     let bytes = fetch_bytes_with_retry(client, &results_url)
         .await
         .with_context(|| format!("failed to download TechEmpower results from {results_url}"))?;
-    let results: TechempowerResults = serde_json::from_slice(&bytes)
-        .context("failed to parse TechEmpower results JSON")?;
+    let results: TechempowerResults =
+        serde_json::from_slice(&bytes).context("failed to parse TechEmpower results JSON")?;
     let scores = compute_language_scores(&results)?;
     Ok(scores)
 }
@@ -53,11 +53,7 @@ async fn latest_completed_run_id(client: &Client) -> Result<String> {
         .map_err(|_| anyhow!("invalid selector for TechEmpower status rows"))?;
 
     for row in document.select(&row_selector) {
-        let run_id = row
-            .value()
-            .attr("data-uuid")
-            .unwrap_or("")
-            .trim();
+        let run_id = row.value().attr("data-uuid").unwrap_or("").trim();
         if run_id.is_empty() {
             continue;
         }
@@ -76,8 +72,8 @@ async fn results_url_for_run(client: &Client, run_id: &str) -> Result<String> {
         .await
         .with_context(|| format!("failed to fetch TechEmpower run page {details_url}"))?;
     let document = Html::parse_document(&details_html);
-    let link_selector = Selector::parse("a")
-        .map_err(|_| anyhow!("invalid selector for TechEmpower run links"))?;
+    let link_selector =
+        Selector::parse("a").map_err(|_| anyhow!("invalid selector for TechEmpower run links"))?;
     for link in document.select(&link_selector) {
         let text = link.text().collect::<Vec<_>>().join(" ");
         if text.trim() == "results.json" {
@@ -124,7 +120,7 @@ fn compute_language_scores(results: &TechempowerResults) -> Result<FxHashMap<Str
             if max_rps <= 0.0 {
                 continue;
             }
-            let entry = per_framework.entry(framework.to_string()).or_default();
+            let entry = per_framework.entry(framework.clone()).or_default();
             entry.rps[test_idx] = max_rps;
             entry.present[test_idx] = true;
             if max_rps > max_rps_by_test[test_idx] {
@@ -180,7 +176,7 @@ fn map_framework_languages(metadata: &[TfbTestMetadata]) -> FxHashMap<String, St
         let Some(lang) = canonicalize_language(entry.language.as_str()) else {
             continue;
         };
-        map.entry(entry.framework.to_string()).or_insert(lang);
+        map.entry(entry.framework.clone()).or_insert(lang);
     }
     map
 }
