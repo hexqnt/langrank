@@ -19,8 +19,8 @@ const SPINNER_TICKS_BRAILLE_PLAIN: [&str; 8] = ["⠁", "⠂", "⠄", "⡀", "⢀
 const SPINNER_TICKS_ASCII: &str = "|/-\\";
 
 const STAGE_TOTAL: u8 = 2;
-const STAGE_FETCH: &str = "Получение данных";
-const STAGE_COMPUTE: &str = "Расчёт";
+const STAGE_FETCH: &str = "Fetching data";
+const STAGE_COMPUTE: &str = "Computation";
 
 #[derive(Clone, Copy)]
 pub enum Stage {
