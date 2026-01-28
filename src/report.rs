@@ -2,6 +2,7 @@ use crate::SchulzeRecord;
 use crate::write_output_file;
 use anyhow::Result;
 use chrono::{DateTime, Local};
+use maud::{DOCTYPE, Markup, PreEscaped, html};
 use std::path::Path;
 
 pub struct HtmlReportPaths<'a> {
@@ -64,297 +65,278 @@ fn render_html_report(context: &HtmlReportContext<'_>) -> String {
         context.run_started_at.format("%Y-%m-%d")
     );
 
-    let mut html = String::new();
-    html.push_str("<!doctype html>\n<html lang=\"en\">\n<head>\n");
-    html.push_str("<meta charset=\"utf-8\">\n");
-    html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
-    html.push_str(&format!("<title>{}</title>\n", escape_html(&title)));
-    html.push_str("<meta name=\"color-scheme\" content=\"light\">\n");
-    html.push_str(&format!(
-        "<link rel=\"preconnect\" href=\"{}\">\n",
-        CDN_FONTS_GOOGLEAPIS
-    ));
-    html.push_str(&format!(
-        "<link rel=\"preconnect\" href=\"{}\" crossorigin>\n",
-        CDN_FONTS_GSTATIC
-    ));
-    html.push_str(&format!(
-        "<link href=\"{}\" rel=\"stylesheet\">\n",
-        CDN_FONTS_STYLESHEET
-    ));
-    html.push_str("<style>\n");
-    html.push_str(REPORT_STYLE);
-    html.push_str("\n</style>\n</head>\n<body>\n");
-    html.push_str("<div class=\"page\">\n");
-    html.push_str("<header class=\"hero\">\n");
-    html.push_str("<div class=\"hero-top\">\n");
-    html.push_str(&format!(
-        "<div class=\"pill\">LangRank v{}</div>\n",
-        env!("CARGO_PKG_VERSION")
-    ));
-    html.push_str(&format!(
-        "<a class=\"github-link\" href=\"{}\" target=\"_blank\" rel=\"noopener\" aria-label=\"Open GitHub repository\">\n",
-        GITHUB_REPO_URL
-    ));
-    html.push_str(GITHUB_SVG);
-    html.push_str("<span>GitHub</span>\n");
-    html.push_str("</a>\n");
-    html.push_str("</div>\n");
-    html.push_str("<h1>LangRank Report</h1>\n");
-    html.push_str(&format!(
-        "<p class=\"subtitle\">Aggregated language popularity and performance ranking using the <a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">Schulze method</a>.</p>\n",
-        SCHULZE_METHOD_URL
-    ));
-    html.push_str("<div class=\"meta\">\n");
-    html.push_str(&format!(
-        "<div><span class=\"label\">Generated</span><span class=\"value mono\">{}</span></div>\n",
-        escape_html(&generated_at)
-    ));
-    html.push_str(&format!(
-        "<div><span class=\"label\">Coverage</span><span class=\"value mono\">{}</span></div>\n",
-        escape_html(&showing)
-    ));
-    html.push_str("</div>\n");
-    html.push_str("</header>\n");
+    html! {
+        (DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { (title) }
+                meta name="color-scheme" content="light";
+                link rel="preconnect" href=(CDN_FONTS_GOOGLEAPIS);
+                link rel="preconnect" href=(CDN_FONTS_GSTATIC) crossorigin;
+                link rel="stylesheet" href=(CDN_FONTS_STYLESHEET);
+                style { (PreEscaped(REPORT_STYLE)) }
+            }
+            body {
+                div class="page" {
+                    header class="hero" {
+                        div class="hero-top" {
+                            div class="pill" { "LangRank v" (env!("CARGO_PKG_VERSION")) }
+                            a class="github-link"
+                                href=(GITHUB_REPO_URL)
+                                target="_blank"
+                                rel="noopener"
+                                aria-label="Open GitHub repository" {
+                                    (PreEscaped(GITHUB_SVG))
+                                    span { "GitHub" }
+                                }
+                        }
+                        h1 { "LangRank Report" }
+                        p class="subtitle" {
+                            "Aggregated language popularity and performance ranking using the "
+                            a href=(SCHULZE_METHOD_URL) target="_blank" rel="noopener noreferrer" {
+                                "Schulze method"
+                            }
+                            "."
+                        }
+                        div class="meta" {
+                            div {
+                                span class="label" { "Generated" }
+                                span class="value mono" { (generated_at) }
+                            }
+                            div {
+                                span class="label" { "Coverage" }
+                                span class="value mono" { (showing) }
+                            }
+                        }
+                    }
 
-    html.push_str("<section class=\"cards\">\n");
-    html.push_str(&format!(
-        "<div class=\"card\"><div class=\"card-label\">Ranked languages</div><div class=\"card-value\">{}</div></div>\n",
-        total
-    ));
-    html.push_str(&format!(
-        "<div class=\"card\"><div class=\"card-label\">TIOBE entries</div><div class=\"card-value\">{}</div></div>\n",
-        context.tiobe_count
-    ));
-    html.push_str(&format!(
-        "<div class=\"card\"><div class=\"card-label\">PYPL entries</div><div class=\"card-value\">{}</div></div>\n",
-        context.pypl_count
-    ));
-    html.push_str(&format!(
-        "<div class=\"card\"><div class=\"card-label\">Languish entries</div><div class=\"card-value\">{}</div></div>\n",
-        context.languish_count
-    ));
-    html.push_str(&format!(
-        "<div class=\"card\"><div class=\"card-label\">Benchmarks langs</div><div class=\"card-value\">{}</div></div>\n",
-        context.benchmark_lang_count
-    ));
-    html.push_str(&format!(
-        "<div class=\"card\"><div class=\"card-label\">TechEmpower langs</div><div class=\"card-value\">{}</div></div>\n",
-        context.techempower_lang_count
-    ));
-    html.push_str("</section>\n");
+                    section class="cards" {
+                        div class="card" {
+                            div class="card-label" { "Ranked languages" }
+                            div class="card-value" { (total) }
+                        }
+                        div class="card" {
+                            div class="card-label" { "TIOBE entries" }
+                            div class="card-value" { (context.tiobe_count) }
+                        }
+                        div class="card" {
+                            div class="card-label" { "PYPL entries" }
+                            div class="card-value" { (context.pypl_count) }
+                        }
+                        div class="card" {
+                            div class="card-label" { "Languish entries" }
+                            div class="card-value" { (context.languish_count) }
+                        }
+                        div class="card" {
+                            div class="card-label" { "Benchmarks langs" }
+                            div class="card-value" { (context.benchmark_lang_count) }
+                        }
+                        div class="card" {
+                            div class="card-label" { "TechEmpower langs" }
+                            div class="card-value" { (context.techempower_lang_count) }
+                        }
+                    }
 
-    html.push_str("<section class=\"table-section\">\n");
-    html.push_str("<div class=\"section-header\">\n");
-    html.push_str("<div>\n");
-    html.push_str("<h2>Schulze Ranking</h2>\n");
-    if !hint.is_empty() {
-        html.push_str(&format!(
-            "<div class=\"hint\">{}</div>\n",
-            escape_html(&hint)
-        ));
-    }
-    html.push_str("</div>\n");
-    html.push_str("</div>\n");
-    html.push_str(&format!(
-        "<div class=\"table-wrap {table_class}\">\n<table>\n"
-    ));
-    html.push_str(&table_header);
-    html.push_str("<tbody>\n");
-    html.push_str(&table_rows);
-    html.push_str("</tbody>\n</table>\n</div>\n</section>\n");
+                    section class="table-section" {
+                        div class="section-header" {
+                            div {
+                                h2 { "Schulze Ranking" }
+                                @if !hint.is_empty() {
+                                    div class="hint" { (hint) }
+                                }
+                            }
+                        }
+                        div class=(format!("table-wrap {table_class}")) {
+                            table {
+                                (table_header)
+                                tbody {
+                                    (table_rows)
+                                }
+                            }
+                        }
+                    }
 
-    html.push_str(&downloads);
+                    (downloads)
 
-    html.push_str("<footer class=\"footer\">\n");
-    html.push_str("<div>Sources: TIOBE, PYPL, Languish, Benchmarks Game, TechEmpower.</div>\n");
-    html.push_str("</footer>\n");
-    html.push_str("</div>\n</body>\n</html>\n");
-    html
-}
-
-fn render_full_table_header() -> String {
-    let mut header = String::new();
-    header.push_str("<thead><tr>");
-    header.push_str("<th>Pos</th>");
-    header.push_str("<th>Language</th>");
-    header.push_str("<th>T Rank</th>");
-    header.push_str("<th>T Share</th>");
-    header.push_str("<th>T Trend</th>");
-    header.push_str("<th>P Rank</th>");
-    header.push_str("<th>P Share</th>");
-    header.push_str("<th>P Trend</th>");
-    header.push_str("<th>L Rank</th>");
-    header.push_str("<th>L Share</th>");
-    header.push_str("<th>L Trend</th>");
-    header.push_str("<th>BG</th>");
-    header.push_str("<th>TE</th>");
-    header.push_str("<th>Perf</th>");
-    header.push_str("<th>Wins</th>");
-    header.push_str("</tr></thead>\n");
-    header
-}
-
-fn render_compact_table_header() -> String {
-    let mut header = String::new();
-    header.push_str("<thead><tr>");
-    header.push_str("<th>Pos</th>");
-    header.push_str("<th>Language</th>");
-    header.push_str("<th>TIOBE %</th>");
-    header.push_str("<th>PYPL %</th>");
-    header.push_str("<th>Languish %</th>");
-    header.push_str("<th>BG</th>");
-    header.push_str("<th>TE</th>");
-    header.push_str("<th>Perf</th>");
-    header.push_str("<th>Wins</th>");
-    header.push_str("</tr></thead>\n");
-    header
-}
-
-fn render_full_table_rows(records: &[SchulzeRecord]) -> String {
-    let mut rows = String::new();
-    for record in records {
-        let (t_trend, t_class) = format_trend_html(record.tiobe_trend);
-        let (p_trend, p_class) = format_trend_html(record.pypl_trend);
-        let (l_trend, l_class) = format_trend_html(record.languish_trend);
-        rows.push_str("<tr>");
-        rows.push_str(&format!("<td class=\"num\">{}</td>", record.position));
-        rows.push_str(&format!(
-            "<td class=\"lang\">{}</td>",
-            escape_html(&record.lang)
-        ));
-        rows.push_str(&format!(
-            "<td class=\"num\">{}</td>",
-            format_optional_rank(record.tiobe_rank)
-        ));
-        rows.push_str(&format!("<td class=\"num\">{:.2}</td>", record.tiobe_share));
-        rows.push_str(&format!(
-            "<td><span class=\"trend {t_class}\">{t_trend}</span></td>"
-        ));
-        rows.push_str(&format!(
-            "<td class=\"num\">{}</td>",
-            format_optional_rank(record.pypl_rank)
-        ));
-        rows.push_str(&format!("<td class=\"num\">{:.2}</td>", record.pypl_share));
-        rows.push_str(&format!(
-            "<td><span class=\"trend {p_class}\">{p_trend}</span></td>"
-        ));
-        rows.push_str(&format!(
-            "<td class=\"num\">{}</td>",
-            format_optional_rank(record.languish_rank)
-        ));
-        rows.push_str(&format!(
-            "<td class=\"num\">{:.2}</td>",
-            record.languish_share
-        ));
-        rows.push_str(&format!(
-            "<td><span class=\"trend {l_class}\">{l_trend}</span></td>"
-        ));
-        rows.push_str(&format!(
-            "<td class=\"num\">{}</td>",
-            format_optional_float(record.benchmark_score)
-        ));
-        rows.push_str(&format!(
-            "<td class=\"num\">{}</td>",
-            format_optional_float(record.techempower_score)
-        ));
-        let perf = format_perf_combined(record);
-        rows.push_str(&format!("<td class=\"num\">{}</td>", perf));
-
-        rows.push_str(&format!("<td class=\"num\">{}</td>", record.schulze_wins));
-        rows.push_str("</tr>\n");
-    }
-    rows
-}
-
-fn render_compact_table_rows(records: &[SchulzeRecord], limit: usize) -> String {
-    let mut rows = String::new();
-    for record in records.iter().take(limit) {
-        rows.push_str("<tr>");
-        rows.push_str(&format!("<td class=\"num\">{}</td>", record.position));
-        rows.push_str(&format!(
-            "<td class=\"lang\">{}</td>",
-            escape_html(&record.lang)
-        ));
-        rows.push_str(&format!("<td class=\"num\">{:.2}</td>", record.tiobe_share));
-        rows.push_str(&format!("<td class=\"num\">{:.2}</td>", record.pypl_share));
-        rows.push_str(&format!(
-            "<td class=\"num\">{:.2}</td>",
-            record.languish_share
-        ));
-        rows.push_str(&format!(
-            "<td class=\"num\">{}</td>",
-            format_optional_float(record.benchmark_score)
-        ));
-        rows.push_str(&format!(
-            "<td class=\"num\">{}</td>",
-            format_optional_float(record.techempower_score)
-        ));
-        let perf = format_perf_combined(record);
-        rows.push_str(&format!("<td class=\"num\">{}</td>", perf));
-        rows.push_str(&format!("<td class=\"num\">{}</td>", record.schulze_wins));
-        rows.push_str("</tr>\n");
-    }
-    rows
-}
-
-fn render_downloads(context: &HtmlReportContext<'_>) -> String {
-    let items = [
-        ("Schulze CSV", context.paths.schulze),
-        ("Combined CSV", context.paths.rankings),
-        ("Benchmarks CSV", context.paths.benchmarks),
-    ];
-    let mut any_saved = false;
-    for (_, path) in &items {
-        if path.is_some() {
-            any_saved = true;
-            break;
+                    footer class="footer" {
+                        div { "Sources: TIOBE, PYPL, Languish, Benchmarks Game, TechEmpower." }
+                    }
+                }
+            }
         }
     }
+    .into_string()
+}
 
-    let mut section = String::new();
-    section.push_str("<section class=\"downloads\">\n");
-    section.push_str("<h3>Downloads</h3>\n");
-    if !any_saved {
-        section.push_str("<p class=\"muted\">No CSV files were saved. Use --save-schulze, --save-rankings, or --save-benchmarks.</p>\n");
-        section.push_str("</section>\n");
-        return section;
+fn render_full_table_header() -> Markup {
+    html! {
+        thead {
+            tr {
+                th { "Pos" }
+                th { "Language" }
+                th { "T Rank" }
+                th { "T Share" }
+                th { "T Trend" }
+                th { "P Rank" }
+                th { "P Share" }
+                th { "P Trend" }
+                th { "L Rank" }
+                th { "L Share" }
+                th { "L Trend" }
+                th { "BG" }
+                th { "TE" }
+                th { "Perf" }
+                th { "Wins" }
+            }
+        }
     }
+}
 
-    section.push_str("<div class=\"download-list\">\n");
-    for (label, path) in items {
-        section.push_str("<div class=\"download-item\">\n");
-        section.push_str(&format!(
-            "<div class=\"download-label\">{}</div>\n",
-            escape_html(label)
-        ));
-        if let Some(path) = path {
+fn render_compact_table_header() -> Markup {
+    html! {
+        thead {
+            tr {
+                th { "Pos" }
+                th { "Language" }
+                th { "TIOBE %" }
+                th { "PYPL %" }
+                th { "Languish %" }
+                th { "BG" }
+                th { "TE" }
+                th { "Perf" }
+                th { "Wins" }
+            }
+        }
+    }
+}
+
+fn render_full_table_row(record: &SchulzeRecord) -> Markup {
+    let (t_trend, t_class) = format_trend_html(record.tiobe_trend);
+    let (p_trend, p_class) = format_trend_html(record.pypl_trend);
+    let (l_trend, l_class) = format_trend_html(record.languish_trend);
+    let perf = format_perf_combined(record);
+    html! {
+        tr {
+            td class="num" { (record.position) }
+            td class="lang" { (&record.lang) }
+            td class="num" { (format_optional_rank(record.tiobe_rank)) }
+            td class="num" { (format!("{:.2}", record.tiobe_share)) }
+            td {
+                span class=(format!("trend {t_class}")) { (t_trend) }
+            }
+            td class="num" { (format_optional_rank(record.pypl_rank)) }
+            td class="num" { (format!("{:.2}", record.pypl_share)) }
+            td {
+                span class=(format!("trend {p_class}")) { (p_trend) }
+            }
+            td class="num" { (format_optional_rank(record.languish_rank)) }
+            td class="num" { (format!("{:.2}", record.languish_share)) }
+            td {
+                span class=(format!("trend {l_class}")) { (l_trend) }
+            }
+            td class="num" { (format_optional_float(record.benchmark_score)) }
+            td class="num" { (format_optional_float(record.techempower_score)) }
+            td class="num" { (perf) }
+            td class="num" { (record.schulze_wins) }
+        }
+    }
+}
+
+fn render_compact_table_row(record: &SchulzeRecord) -> Markup {
+    let perf = format_perf_combined(record);
+    html! {
+        tr {
+            td class="num" { (record.position) }
+            td class="lang" { (&record.lang) }
+            td class="num" { (format!("{:.2}", record.tiobe_share)) }
+            td class="num" { (format!("{:.2}", record.pypl_share)) }
+            td class="num" { (format!("{:.2}", record.languish_share)) }
+            td class="num" { (format_optional_float(record.benchmark_score)) }
+            td class="num" { (format_optional_float(record.techempower_score)) }
+            td class="num" { (perf) }
+            td class="num" { (record.schulze_wins) }
+        }
+    }
+}
+
+fn render_full_table_rows(records: &[SchulzeRecord]) -> Markup {
+    html! {
+        @for record in records {
+            (render_full_table_row(record))
+        }
+    }
+}
+
+fn render_compact_table_rows(records: &[SchulzeRecord], limit: usize) -> Markup {
+    html! {
+        @for record in records.iter().take(limit) {
+            (render_compact_table_row(record))
+        }
+    }
+}
+
+fn render_download_item(label: &str, path: Option<&Path>, output_path: &Path) -> Markup {
+    let content = path.map_or_else(
+        || html! { span class="download-path" { "Not saved" } },
+        |path| {
             let full_display = path.to_string_lossy();
             let display_name = path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or(full_display.as_ref());
-            if let Some(rel) = relative_link(context.output_path, path) {
-                section.push_str(&format!(
-                    "<a class=\"download-link\" href=\"{}\" title=\"{}\">{}</a>\n",
-                    escape_html(&rel),
-                    escape_html(full_display.as_ref()),
-                    escape_html(display_name)
-                ));
-            } else {
-                section.push_str(&format!(
-                    "<span class=\"download-path\" title=\"{}\">{}</span>\n",
-                    escape_html(full_display.as_ref()),
-                    escape_html(display_name)
-                ));
-            }
-        } else {
-            section.push_str("<span class=\"download-path\">Not saved</span>\n");
+            relative_link(output_path, path).map_or_else(
+                || {
+                    html! {
+                        span class="download-path" title=(full_display.as_ref()) {
+                            (display_name)
+                        }
+                    }
+                },
+                |rel| {
+                    html! {
+                        a class="download-link" href=(rel) title=(full_display.as_ref()) {
+                            (display_name)
+                        }
+                    }
+                },
+            )
+        },
+    );
+
+    html! {
+        div class="download-item" {
+            div class="download-label" { (label) }
+            (content)
         }
-        section.push_str("</div>\n");
     }
-    section.push_str("</div>\n</section>\n");
-    section
+}
+
+fn render_downloads(context: &HtmlReportContext<'_>) -> Markup {
+    let items = [
+        ("Schulze CSV", context.paths.schulze),
+        ("Combined CSV", context.paths.rankings),
+        ("Benchmarks CSV", context.paths.benchmarks),
+    ];
+    let any_saved = items.iter().any(|(_, path)| path.is_some());
+
+    html! {
+        section class="downloads" {
+            h3 { "Downloads" }
+            @if !any_saved {
+                p class="muted" {
+                    "No CSV files were saved. Use --save-schulze, --save-rankings, or --save-benchmarks."
+                }
+            } @else {
+                div class="download-list" {
+                    @for (label, path) in items {
+                        (render_download_item(label, path, context.output_path))
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn relative_link(html_path: &Path, target: &Path) -> Option<String> {
@@ -405,21 +387,6 @@ fn format_trend_html(trend: Option<f64>) -> (String, &'static str) {
             (label, class)
         },
     )
-}
-
-fn escape_html(input: &str) -> String {
-    let mut escaped = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&#39;"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
 }
 
 const GITHUB_REPO_URL: &str = "https://github.com/hexqnt/langrank";
