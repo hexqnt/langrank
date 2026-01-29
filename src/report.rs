@@ -161,7 +161,19 @@ fn render_html_report(context: &HtmlReportContext<'_>) -> String {
                     (downloads)
 
                     footer class="footer" {
-                        div { "Sources: TIOBE, PYPL, Languish, Benchmarks Game, TechEmpower." }
+                        div {
+                            "Sources: "
+                            a href="https://www.tiobe.com/tiobe-index/" target="_blank" rel="noopener noreferrer" { "TIOBE" }
+                            ", "
+                            a href="https://pypl.github.io/PYPL.html" target="_blank" rel="noopener noreferrer" { "PYPL" }
+                            ", "
+                            a href="https://tjpalmer.github.io/languish/" target="_blank" rel="noopener noreferrer" { "Languish" }
+                            ", "
+                            a href="https://benchmarksgame-team.pages.debian.net/benchmarksgame/box-plot-summary-charts.html" target="_blank" rel="noopener noreferrer" { "Benchmarks Game" }
+                            ", "
+                            a href="https://www.techempower.com/benchmarks/" target="_blank" rel="noopener noreferrer" { "TechEmpower" }
+                            "."
+                        }
                     }
                 }
             }
@@ -285,7 +297,7 @@ fn render_download_item(label: &str, path: Option<&Path>, output_path: &Path) ->
             let display_name = path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .unwrap_or(full_display.as_ref());
+                .unwrap_or_else(|| full_display.as_ref());
             relative_link(output_path, path).map_or_else(
                 || {
                     html! {
@@ -743,6 +755,19 @@ tbody tr:hover {
   color: var(--muted);
   font-size: 13px;
   text-align: center;
+}
+
+.footer a {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(61, 64, 91, 0.28);
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+.footer a:hover {
+  color: var(--accent-strong);
+  border-color: var(--accent-strong);
 }
 
 @media (max-width: 720px) {
