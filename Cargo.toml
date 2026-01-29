@@ -2,6 +2,11 @@
 name = "langrank"
 version = "0.2.6"
 edition = "2024"
+license = "Apache-2.0 OR MIT"
+description = "A command-line tool to rank programming languages based on various metrics."
+repository = "https://github.com/hexqnt/langrank"
+homepage = "https://langrank.hexqnt.ru"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0"
