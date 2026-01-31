@@ -72,6 +72,17 @@ fn render_html_report(context: &HtmlReportContext<'_>) -> String {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (title) }
+                meta name="description" content=(REPORT_DESCRIPTION);
+                meta name="keywords" content=(REPORT_KEYWORDS);
+                link rel="canonical" href=(REPORT_URL);
+                meta property="og:title" content=(title);
+                meta property="og:description" content=(REPORT_DESCRIPTION);
+                meta property="og:type" content="website";
+                meta property="og:url" content=(REPORT_URL);
+                meta name="twitter:card" content="summary";
+                meta name="twitter:title" content=(title);
+                meta name="twitter:description" content=(REPORT_DESCRIPTION);
+                link rel="icon" type="image/svg+xml" href=(REPORT_FAVICON);
                 meta name="color-scheme" content="light";
                 link rel="preconnect" href=(CDN_FONTS_GOOGLEAPIS);
                 link rel="preconnect" href=(CDN_FONTS_GSTATIC) crossorigin;
@@ -406,6 +417,10 @@ const SCHULZE_METHOD_URL: &str = "https://en.wikipedia.org/wiki/Schulze_method";
 const CDN_FONTS_GOOGLEAPIS: &str = "https://fonts.googleapis.com";
 const CDN_FONTS_GSTATIC: &str = "https://fonts.gstatic.com";
 const CDN_FONTS_STYLESHEET: &str = "https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@400;500;600&display=swap";
+const REPORT_URL: &str = "https://langrank.hexq.ru/";
+const REPORT_DESCRIPTION: &str = "LangRank report ranks programming languages using the Schulze method, blending popularity and performance data from major indexes.";
+const REPORT_KEYWORDS: &str = "programming languages, ranking, Schulze method, TIOBE, PYPL, Languish, Benchmarks Game, TechEmpower, performance metrics";
+const REPORT_FAVICON: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23f6f3ec'/%3E%3Ccircle cx='32' cy='32' r='20' fill='%23e07a5f'/%3E%3Ctext x='32' y='38' text-anchor='middle' font-family='sans-serif' font-size='20' fill='%23ffffff'%3ELR%3C/text%3E%3C/svg%3E";
 
 const REPORT_STYLE: &str = r#"
 :root {
