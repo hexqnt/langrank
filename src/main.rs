@@ -402,7 +402,7 @@ fn compute_schulze_records(
         ));
     }
     let ballots = build_ballots(&languages, &sources);
-    let (_d, p) = build_preference_matrices(&languages, &ballots);
+    let (_d, p) = build_preference_matrices(languages.len(), &ballots);
     let index_map = build_language_index(&languages);
     let ranked = rank_languages(&languages, &p, &index_map, &sources);
 
@@ -587,7 +587,7 @@ fn count_sources(lang: &str, sources: &RankingSources<'_>) -> usize {
     count
 }
 
-fn build_ballots(languages: &[String], sources: &RankingSources<'_>) -> Vec<Vec<String>> {
+fn build_ballots(languages: &[String], sources: &RankingSources<'_>) -> Vec<Vec<usize>> {
     let tiobe_order = order_by_metric(languages, |lang| sources.tiobe.share(lang), false);
     let pypl_order = order_by_metric(languages, |lang| sources.pypl.share(lang), false);
     let languish_order = order_by_metric(languages, |lang| sources.languish.share(lang), false);
@@ -596,11 +596,11 @@ fn build_ballots(languages: &[String], sources: &RankingSources<'_>) -> Vec<Vec<
     vec![tiobe_order, pypl_order, languish_order, performance_order]
 }
 
-fn order_by_metric<F>(languages: &[String], metric: F, ascending: bool) -> Vec<String>
+fn order_by_metric<F>(languages: &[String], metric: F, ascending: bool) -> Vec<usize>
 where
     F: Fn(&str) -> f64,
 {
-    let mut scored = Vec::with_capacity(languages.len());
+    let mut scored: Vec<(usize, f64)> = Vec::with_capacity(languages.len());
     for (idx, lang) in languages.iter().enumerate() {
         scored.push((idx, metric(lang.as_str())));
     }
@@ -611,10 +611,7 @@ where
         }
         ord.then_with(|| languages[*idx_a].cmp(&languages[*idx_b]))
     });
-    scored
-        .into_iter()
-        .map(|(idx, _)| languages[idx].clone())
-        .collect()
+    scored.into_iter().map(|(idx, _)| idx).collect()
 }
 
 fn build_language_index(languages: &[String]) -> FxHashMap<&str, usize> {
@@ -655,24 +652,12 @@ fn rank_languages(
     ranked
 }
 
-fn build_preference_matrices(
-    languages: &[String],
-    ballots: &[Vec<String>],
-) -> (Array2<usize>, Array2<usize>) {
-    let n = languages.len();
-    let index_map: FxHashMap<&str, usize> = languages
-        .iter()
-        .enumerate()
-        .map(|(idx, lang)| (lang.as_str(), idx))
-        .collect();
-
+fn build_preference_matrices(n: usize, ballots: &[Vec<usize>]) -> (Array2<usize>, Array2<usize>) {
     let mut d = Array2::<usize>::zeros((n, n));
     for ballot in ballots {
         let mut positions = vec![0usize; n];
-        for (pos, lang) in ballot.iter().enumerate() {
-            if let Some(&idx) = index_map.get(lang.as_str()) {
-                positions[idx] = pos;
-            }
+        for (pos, &idx) in ballot.iter().enumerate() {
+            positions[idx] = pos;
         }
         for i in 0..n {
             for j in 0..n {

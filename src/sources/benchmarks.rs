@@ -89,7 +89,7 @@ fn compute_benchmark_scores_sync(data: &[u8]) -> Result<FxHashMap<String, f64>> 
         }
     }
 
-    let mut ratios_by_lang: FxHashMap<String, Vec<f64>> = FxHashMap::default();
+    let mut stats_by_lang: FxHashMap<String, (f64, usize)> = FxHashMap::default();
     for ((lang, task), elapsed) in best_per_lang_task {
         let Some(best) = best_per_task.get(task.as_str()) else {
             continue;
@@ -99,17 +99,17 @@ fn compute_benchmark_scores_sync(data: &[u8]) -> Result<FxHashMap<String, f64>> 
         }
         let ratio = *best / elapsed;
         if ratio.is_finite() && ratio > 0.0 {
-            ratios_by_lang.entry(lang).or_default().push(ratio);
+            let entry = stats_by_lang.entry(lang).or_insert((0.0, 0));
+            entry.0 += ratio.ln();
+            entry.1 += 1;
         }
     }
 
     let mut scores: FxHashMap<String, f64> = FxHashMap::default();
-    for (lang, ratios) in ratios_by_lang {
-        let count = ratios.len();
+    for (lang, (sum_ln, count)) in stats_by_lang {
         if count == 0 {
             continue;
         }
-        let sum_ln: f64 = ratios.iter().map(|ratio| ratio.ln()).sum();
         let score = (sum_ln / (count as f64)).exp();
         if score.is_finite() {
             scores.insert(lang, score);

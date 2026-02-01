@@ -145,11 +145,18 @@ pub fn aggregate_entries(entries: Vec<RawEntry>) -> Vec<RankingEntry> {
 }
 
 pub fn extract_cell_text(cell: ElementRef<'_>) -> String {
-    cell.text()
-        .map(str::trim)
-        .filter(|chunk| !chunk.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut out = String::new();
+    for chunk in cell.text() {
+        let trimmed = chunk.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(trimmed);
+    }
+    out
 }
 
 pub fn parse_u32(value: &str) -> Option<u32> {
@@ -162,20 +169,37 @@ pub fn parse_u32(value: &str) -> Option<u32> {
 }
 
 pub fn parse_percent(value: &str) -> Option<f64> {
-    let trimmed = value.trim().trim_end_matches('%').trim();
-    if trimmed.is_empty() {
+    let mut buf = String::with_capacity(value.len());
+    let mut saw_digit = false;
+    let mut saw_decimal = false;
+
+    for ch in value.chars() {
+        match ch {
+            '0'..='9' => {
+                buf.push(ch);
+                saw_digit = true;
+            }
+            '.' | ',' => {
+                if !saw_decimal {
+                    buf.push('.');
+                    saw_decimal = true;
+                }
+            }
+            '-' | '\u{2212}' | '\u{2013}' | '\u{2014}' => {
+                if buf.is_empty() {
+                    buf.push('-');
+                }
+            }
+            '+' | '%' | ' ' | '\t' | '\n' | '\r' | '\u{00a0}' | '\u{202f}' => {}
+            _ => {}
+        }
+    }
+
+    if !saw_digit {
         return None;
     }
-    let cleaned = trimmed
-        .replace(['\u{2212}', '\u{2013}', '\u{2014}'], "-")
-        .replace(',', ".")
-        .replace(['+', '\u{00a0}', '\u{202f}'], "")
-        .trim()
-        .to_string();
-    if cleaned.is_empty() {
-        return None;
-    }
-    cleaned.parse::<f64>().ok()
+
+    buf.parse::<f64>().ok()
 }
 
 fn normalize_alias_key(input: &str) -> String {
