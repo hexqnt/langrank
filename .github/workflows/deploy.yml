@@ -32,7 +32,8 @@ jobs:
             --save-schulze dist/schulze_rankings.csv \
             --save-benchmarks dist/benchmarksgame.csv \
             --full-output \
-            --archive-csv
+            --archive-csv \
+            --minify-html
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3

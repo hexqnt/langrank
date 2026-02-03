@@ -3,6 +3,7 @@ use crate::write_output_file;
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
+use minify_html::{Cfg, minify};
 use std::path::Path;
 
 pub struct HtmlReportPaths<'a> {
@@ -25,9 +26,19 @@ pub struct HtmlReportContext<'a> {
     pub(crate) output_path: &'a Path,
 }
 
-pub async fn save_html_report(output_path: &Path, context: &HtmlReportContext<'_>) -> Result<()> {
+pub async fn save_html_report(
+    output_path: &Path,
+    context: &HtmlReportContext<'_>,
+    minify_html: bool,
+) -> Result<()> {
     let html = render_html_report(context);
-    write_output_file(output_path, html.as_bytes()).await
+    if minify_html {
+        let cfg = Cfg::new();
+        let minified = minify(html.as_bytes(), &cfg);
+        write_output_file(output_path, &minified).await
+    } else {
+        write_output_file(output_path, html.as_bytes()).await
+    }
 }
 
 fn render_html_report(context: &HtmlReportContext<'_>) -> String {
