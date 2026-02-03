@@ -891,6 +891,7 @@ dependencies = [
  "clap_complete",
  "colored",
  "csv",
+ "flate2",
  "indicatif",
  "maud",
  "ndarray",

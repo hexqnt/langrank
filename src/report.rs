@@ -20,6 +20,7 @@ pub struct HtmlReportContext<'a> {
     pub(crate) run_started_at: &'a DateTime<Local>,
     pub(crate) schulze_records: &'a [SchulzeRecord],
     pub(crate) full_output: bool,
+    pub(crate) archive_csv: bool,
     pub(crate) paths: HtmlReportPaths<'a>,
     pub(crate) output_path: &'a Path,
 }
@@ -356,6 +357,17 @@ fn render_downloads(context: &HtmlReportContext<'_>) -> Markup {
                     @for (label, path) in items {
                         (render_download_item(label, path, context.output_path))
                     }
+                }
+            }
+            @if context.archive_csv {
+                p class="downloads-note muted" {
+                    "Popular free tools to open .gz: "
+                    a href="https://www.7-zip.org/" target="_blank" rel="noopener noreferrer" { "7-Zip" }
+                    ", "
+                    a href="https://apps.apple.com/us/app/the-unarchiver/id425424353" target="_blank" rel="noopener noreferrer" { "The Unarchiver" }
+                    ", "
+                    a href="https://www.gnu.org/software/gzip/" target="_blank" rel="noopener noreferrer" { "GNU gzip" }
+                    "."
                 }
             }
         }
@@ -758,6 +770,22 @@ tbody tr:hover {
 }
 
 .download-link:hover {
+  text-decoration: underline;
+}
+
+.downloads-note {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.downloads-note a {
+  color: var(--accent-strong);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.downloads-note a:hover {
   text-decoration: underline;
 }
 

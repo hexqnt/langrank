@@ -10,13 +10,15 @@ use anyhow::{Context, Result, anyhow};
 use chrono::Local;
 use clap::Parser;
 use csv::Writer;
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use ndarray::{Array2, Zip};
 use reqwest::Client;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use std::cmp::Ordering;
-use std::io::IsTerminal;
-use std::path::Path;
+use std::io::{IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::fs;
 
@@ -60,6 +62,7 @@ async fn main() -> Result<()> {
         save_html,
         full_output,
         no_progress,
+        archive_csv,
         ..
     } = cli;
 
@@ -114,21 +117,28 @@ async fn main() -> Result<()> {
     ensure_min_entries("PYPL", pypl_original_len, MIN_SOURCE_ENTRIES)?;
     ensure_min_entries("Languish", languish.len(), MIN_SOURCE_ENTRIES)?;
 
-    if let Some(path) = save_rankings.as_ref() {
-        save_rankings_csv(
-            path.as_path(),
-            &[
-                (SourceKind::Tiobe, &tiobe),
-                (SourceKind::Pypl, &pypl),
-                (SourceKind::Languish, &languish),
-            ],
+    let rankings_output = if let Some(path) = save_rankings.as_ref() {
+        Some(
+            save_rankings_csv(
+                path.as_path(),
+                &[
+                    (SourceKind::Tiobe, &tiobe),
+                    (SourceKind::Pypl, &pypl),
+                    (SourceKind::Languish, &languish),
+                ],
+                archive_csv,
+            )
+            .await?,
         )
-        .await?;
-    }
+    } else {
+        None
+    };
 
-    if let Some(path) = save_benchmarks.as_ref() {
-        save_benchmarks_csv(&bench_bytes, path.as_path()).await?;
-    }
+    let benchmarks_output = if let Some(path) = save_benchmarks.as_ref() {
+        Some(save_benchmarks_csv(&bench_bytes, path.as_path(), archive_csv).await?)
+    } else {
+        None
+    };
 
     let benchmark_scores = if let Some(progress) = progress.as_ref() {
         run_with_spinner(
@@ -160,9 +170,11 @@ async fn main() -> Result<()> {
         &benchmark_scores,
         &techempower_scores,
     )?;
-    if let Some(path) = save_schulze.as_ref() {
-        save_schulze_csv(&schulze_records, path.as_path()).await?;
-    }
+    let schulze_output = if let Some(path) = save_schulze.as_ref() {
+        Some(save_schulze_csv(&schulze_records, path.as_path(), archive_csv).await?)
+    } else {
+        None
+    };
 
     if let Some(path) = save_html.as_ref() {
         let html_context = HtmlReportContext {
@@ -174,10 +186,11 @@ async fn main() -> Result<()> {
             run_started_at: &run_started_at,
             schulze_records: &schulze_records,
             full_output,
+            archive_csv,
             paths: HtmlReportPaths {
-                benchmarks: save_benchmarks.as_deref(),
-                rankings: save_rankings.as_deref(),
-                schulze: save_schulze.as_deref(),
+                benchmarks: benchmarks_output.as_deref(),
+                rankings: rankings_output.as_deref(),
+                schulze: schulze_output.as_deref(),
             },
             output_path: path.as_path(),
         };
@@ -196,9 +209,9 @@ async fn main() -> Result<()> {
         techempower_lang_count,
         run_started_at: &run_started_at,
         paths: SummaryPaths {
-            benchmarks: save_benchmarks.as_deref(),
-            rankings: save_rankings.as_deref(),
-            schulze: save_schulze.as_deref(),
+            benchmarks: benchmarks_output.as_deref(),
+            rankings: rankings_output.as_deref(),
+            schulze: schulze_output.as_deref(),
             html: save_html.as_deref(),
         },
         schulze_records: &schulze_records,
@@ -208,8 +221,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn save_benchmarks_csv(bytes: &[u8], path: &Path) -> Result<()> {
-    write_output_file(path, bytes).await
+async fn save_benchmarks_csv(bytes: &[u8], path: &Path, archive: bool) -> Result<PathBuf> {
+    write_csv_output(path, bytes, archive).await
 }
 
 pub(crate) async fn write_output_file(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -224,6 +237,38 @@ pub(crate) async fn write_output_file(path: &Path, bytes: &[u8]) -> Result<()> {
         .with_context(|| format!("failed to write {}", path.display()))?;
 
     Ok(())
+}
+
+async fn write_csv_output(path: &Path, bytes: &[u8], archive: bool) -> Result<PathBuf> {
+    if archive {
+        let output_path = archive_output_path(path);
+        let gzipped = gzip_bytes(bytes)?;
+        write_output_file(&output_path, &gzipped).await?;
+        Ok(output_path)
+    } else {
+        write_output_file(path, bytes).await?;
+        Ok(path.to_path_buf())
+    }
+}
+
+fn archive_output_path(path: &Path) -> PathBuf {
+    if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("gz"))
+    {
+        return path.to_path_buf();
+    }
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".gz");
+    PathBuf::from(name)
+}
+
+fn gzip_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(bytes)
+        .context("failed to write gzip data")?;
+    encoder.finish().context("failed to finalize gzip data")
 }
 
 fn finalize_writer(mut writer: Writer<Vec<u8>>, label: &str) -> Result<Vec<u8>> {
@@ -251,9 +296,13 @@ fn ensure_min_entries(label: &str, count: usize, min: usize) -> Result<()> {
     Ok(())
 }
 
-async fn save_rankings_csv(path: &Path, sources: &[(SourceKind, &[RankingEntry])]) -> Result<()> {
+async fn save_rankings_csv(
+    path: &Path,
+    sources: &[(SourceKind, &[RankingEntry])],
+    archive: bool,
+) -> Result<PathBuf> {
     let serialized = serialize_rankings(sources)?;
-    write_output_file(path, &serialized).await
+    write_csv_output(path, &serialized, archive).await
 }
 
 fn serialize_rankings(sources: &[(SourceKind, &[RankingEntry])]) -> Result<Vec<u8>> {
@@ -349,7 +398,11 @@ pub(crate) struct SchulzeRecord {
     schulze_wins: usize,
 }
 
-async fn save_schulze_csv(records: &[SchulzeRecord], output_path: &Path) -> Result<()> {
+async fn save_schulze_csv(
+    records: &[SchulzeRecord],
+    output_path: &Path,
+    archive: bool,
+) -> Result<PathBuf> {
     let mut writer = Writer::from_writer(Vec::new());
     for record in records {
         writer
@@ -357,7 +410,7 @@ async fn save_schulze_csv(records: &[SchulzeRecord], output_path: &Path) -> Resu
             .context("failed to serialize Schulze ranking record")?;
     }
     let serialized = finalize_writer(writer, "Schulze ranking writer")?;
-    write_output_file(output_path, &serialized).await
+    write_csv_output(output_path, &serialized, archive).await
 }
 
 fn compute_schulze_records(

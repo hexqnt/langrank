@@ -11,10 +11,11 @@ pub const DEFAULT_BENCHMARKS_PATH: &str = "data/input/benchmarksgame.csv";
 pub const DEFAULT_SCHULZE_PATH: &str = "data/output/schulze_rankings.csv";
 pub const DEFAULT_HTML_PATH: &str = "data/output/report.html";
 
-pub const SAVE_RANKINGS_HELP: &str = "Save combined TIOBE/PYPL rankings to the given CSV file (defaults to data/input/rankings.csv when no path is provided).";
-pub const SAVE_BENCHMARKS_HELP: &str = "Save the downloaded benchmark dataset to the given CSV file (defaults to data/input/benchmarksgame.csv when no path is provided).";
-pub const SAVE_SCHULZE_HELP: &str = "Save the computed Schulze ranking to the given CSV file (defaults to data/output/schulze_rankings.csv when no path is provided).";
+pub const SAVE_RANKINGS_HELP: &str = "Save combined TIOBE/PYPL rankings to the given CSV file (defaults to data/input/rankings.csv when no path is provided). Use --archive-csv to store a .gz instead.";
+pub const SAVE_BENCHMARKS_HELP: &str = "Save the downloaded benchmark dataset to the given CSV file (defaults to data/input/benchmarksgame.csv when no path is provided). Use --archive-csv to store a .gz instead.";
+pub const SAVE_SCHULZE_HELP: &str = "Save the computed Schulze ranking to the given CSV file (defaults to data/output/schulze_rankings.csv when no path is provided). Use --archive-csv to store a .gz instead.";
 pub const SAVE_HTML_HELP: &str = "Save the HTML report to the given file (defaults to data/output/report.html when no path is provided).";
+pub const ARCHIVE_CSV_HELP: &str = "Archive saved CSV outputs into .gz files (recommended for publishing).";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -55,6 +56,8 @@ pub struct Cli {
         help = SAVE_HTML_HELP
     )]
     pub save_html: Option<PathBuf>,
+    #[arg(long, help = ARCHIVE_CSV_HELP)]
+    pub archive_csv: bool,
     #[arg(
         long,
         help = "Print the complete Schulze table with every row and column instead of the abbreviated summary."
