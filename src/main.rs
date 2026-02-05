@@ -60,16 +60,17 @@ async fn main() -> Result<()> {
         save_benchmarks,
         save_schulze,
         save_html,
-        minify_html,
+        no_minify_html,
         full_output,
         no_progress,
         archive_csv,
         ..
     } = cli;
 
-    if minify_html && save_html.is_none() {
-        eprintln!("Warning: --minify-html has no effect without --save-html.");
+    if no_minify_html && save_html.is_none() {
+        eprintln!("Warning: --no-minify-html has no effect without --save-html.");
     }
+    let minify_html = !no_minify_html;
 
     let run_started_at = Local::now();
 
