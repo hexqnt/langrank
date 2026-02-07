@@ -72,6 +72,11 @@ fn render_html_report(context: &HtmlReportContext<'_>) -> String {
         )
     };
     let downloads = render_downloads(context);
+    let table_wrap_class = if context.full_output {
+        format!("table-wrap {table_class} show-shares show-trends")
+    } else {
+        format!("table-wrap {table_class} show-shares")
+    };
     let title = format!(
         "LangRank Report - {}",
         context.run_started_at.format("%Y-%m-%d")
@@ -170,8 +175,9 @@ fn render_html_report(context: &HtmlReportContext<'_>) -> String {
                                     div class="hint" { (hint) }
                                 }
                             }
+                            (render_table_controls(context.full_output))
                         }
-                        div class=(format!("table-wrap {table_class}")) {
+                        div class=(table_wrap_class) {
                             table {
                                 (table_header)
                                 tbody {
@@ -199,6 +205,7 @@ fn render_html_report(context: &HtmlReportContext<'_>) -> String {
                         }
                     }
                 }
+                script { (PreEscaped(REPORT_SCRIPT)) }
             }
         }
     }
@@ -209,21 +216,21 @@ fn render_full_table_header() -> Markup {
     html! {
         thead {
             tr {
-                th { "Pos" }
-                th { "Language" }
-                th { "T Rank" }
-                th { "T Share" }
-                th { "T Trend" }
-                th { "P Rank" }
-                th { "P Share" }
-                th { "P Trend" }
-                th { "L Rank" }
-                th { "L Share" }
-                th { "L Trend" }
-                th { "BG" }
-                th { "TE" }
-                th { "Perf" }
-                th { "Wins" }
+                (render_sortable_header("Pos", "index", ""))
+                (render_sortable_header("Language", "text", ""))
+                (render_sortable_header("T Rank", "num", "col-ranks"))
+                (render_sortable_header("T Share", "num", "col-shares"))
+                (render_sortable_header("T Trend", "num", "col-trends"))
+                (render_sortable_header("P Rank", "num", "col-ranks"))
+                (render_sortable_header("P Share", "num", "col-shares"))
+                (render_sortable_header("P Trend", "num", "col-trends"))
+                (render_sortable_header("L Rank", "num", "col-ranks"))
+                (render_sortable_header("L Share", "num", "col-shares"))
+                (render_sortable_header("L Trend", "num", "col-trends"))
+                (render_sortable_header("BG", "num", "col-perf-detail"))
+                (render_sortable_header("TE", "num", "col-perf-detail"))
+                (render_sortable_header("Perf", "num", ""))
+                (render_sortable_header("Wins", "num", ""))
             }
         }
     }
@@ -233,16 +240,58 @@ fn render_compact_table_header() -> Markup {
     html! {
         thead {
             tr {
-                th { "Pos" }
-                th { "Language" }
-                th { "TIOBE %" }
-                th { "PYPL %" }
-                th { "Languish %" }
-                th { "BG" }
-                th { "TE" }
-                th { "Perf" }
-                th { "Wins" }
+                (render_sortable_header("Pos", "index", ""))
+                (render_sortable_header("Language", "text", ""))
+                (render_sortable_header("TIOBE %", "num", "col-shares"))
+                (render_sortable_header("PYPL %", "num", "col-shares"))
+                (render_sortable_header("Languish %", "num", "col-shares"))
+                (render_sortable_header("BG", "num", "col-perf-detail"))
+                (render_sortable_header("TE", "num", "col-perf-detail"))
+                (render_sortable_header("Perf", "num", ""))
+                (render_sortable_header("Wins", "num", ""))
             }
+        }
+    }
+}
+
+fn render_sortable_header(label: &str, sort: &str, class_name: &str) -> Markup {
+    let aria_label = format!("Sort by {label}");
+    html! {
+        th data-sort=(sort) aria-sort="none" class=(class_name) {
+            button class="sort-button" type="button" aria-label=(aria_label) {
+                span class="sort-label" { (label) }
+                span class="sort-icon" aria-hidden="true" {}
+            }
+        }
+    }
+}
+
+fn render_table_controls(full_output: bool) -> Markup {
+    html! {
+        div class="table-controls" {
+            span class="control-label" { "Columns" }
+            (render_group_toggle("Popularity %", "shares", true))
+            @if full_output {
+                (render_group_toggle("Ranks", "ranks", false))
+                (render_group_toggle("Trends", "trends", true))
+            }
+            (render_group_toggle("Perf details", "perf-detail", false))
+        }
+    }
+}
+
+fn render_group_toggle(label: &str, group: &str, enabled: bool) -> Markup {
+    let mut class_name = String::from("toggle");
+    if enabled {
+        class_name.push_str(" is-on");
+    }
+    html! {
+        button
+            class=(class_name)
+            type="button"
+            data-group=(group)
+            aria-pressed=(if enabled { "true" } else { "false" }) {
+                (label)
         }
     }
 }
@@ -256,23 +305,23 @@ fn render_full_table_row(record: &SchulzeRecord) -> Markup {
         tr {
             td class="num" { (record.position) }
             td class="lang" { (&record.lang) }
-            td class="num" { (format_optional_rank(record.tiobe_rank)) }
-            td class="num" { (format!("{:.2}", record.tiobe_share)) }
-            td {
+            td class="num col-ranks" { (format_optional_rank(record.tiobe_rank)) }
+            td class="num col-shares" { (format!("{:.2}", record.tiobe_share)) }
+            td class="col-trends" {
                 span class=(format!("trend {t_class}")) { (t_trend) }
             }
-            td class="num" { (format_optional_rank(record.pypl_rank)) }
-            td class="num" { (format!("{:.2}", record.pypl_share)) }
-            td {
+            td class="num col-ranks" { (format_optional_rank(record.pypl_rank)) }
+            td class="num col-shares" { (format!("{:.2}", record.pypl_share)) }
+            td class="col-trends" {
                 span class=(format!("trend {p_class}")) { (p_trend) }
             }
-            td class="num" { (format_optional_rank(record.languish_rank)) }
-            td class="num" { (format!("{:.2}", record.languish_share)) }
-            td {
+            td class="num col-ranks" { (format_optional_rank(record.languish_rank)) }
+            td class="num col-shares" { (format!("{:.2}", record.languish_share)) }
+            td class="col-trends" {
                 span class=(format!("trend {l_class}")) { (l_trend) }
             }
-            td class="num" { (format_optional_float(record.benchmark_score)) }
-            td class="num" { (format_optional_float(record.techempower_score)) }
+            td class="num col-perf-detail" { (format_optional_float(record.benchmark_score)) }
+            td class="num col-perf-detail" { (format_optional_float(record.techempower_score)) }
             td class="num" { (perf) }
             td class="num" { (record.schulze_wins) }
         }
@@ -285,11 +334,11 @@ fn render_compact_table_row(record: &SchulzeRecord) -> Markup {
         tr {
             td class="num" { (record.position) }
             td class="lang" { (&record.lang) }
-            td class="num" { (format!("{:.2}", record.tiobe_share)) }
-            td class="num" { (format!("{:.2}", record.pypl_share)) }
-            td class="num" { (format!("{:.2}", record.languish_share)) }
-            td class="num" { (format_optional_float(record.benchmark_score)) }
-            td class="num" { (format_optional_float(record.techempower_score)) }
+            td class="num col-shares" { (format!("{:.2}", record.tiobe_share)) }
+            td class="num col-shares" { (format!("{:.2}", record.pypl_share)) }
+            td class="num col-shares" { (format!("{:.2}", record.languish_share)) }
+            td class="num col-perf-detail" { (format_optional_float(record.benchmark_score)) }
+            td class="num col-perf-detail" { (format_optional_float(record.techempower_score)) }
             td class="num" { (perf) }
             td class="num" { (record.schulze_wins) }
         }
@@ -459,6 +508,9 @@ const REPORT_STYLE: &str = r#"
   --accent-soft: #81b29a;
   --border: #e2d6c6;
   --shadow: 0 24px 60px rgba(28, 25, 23, 0.12);
+  --row-odd: #ffffff;
+  --row-even: #f9f8f3;
+  --row-hover: #fbefec;
 }
 
 * {
@@ -652,26 +704,78 @@ h1 {
   font-size: 13px;
 }
 
+.table-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.control-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-right: 4px;
+}
+
+.toggle {
+  border: 1px solid rgba(61, 64, 91, 0.25);
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--muted);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.toggle.is-on {
+  background: rgba(61, 64, 91, 0.12);
+  border-color: rgba(61, 64, 91, 0.45);
+  color: var(--accent-cool);
+}
+
+.toggle:focus-visible {
+  outline: 2px solid rgba(61, 64, 91, 0.4);
+  outline-offset: 2px;
+}
+
 .table-wrap {
   border-radius: 20px;
   overflow: auto;
   border: 1px solid var(--border);
   background: var(--card);
   box-shadow: var(--shadow);
+  position: relative;
+  --table-min-width: 980px;
+  --sticky-col-2-left: 64px;
 }
+
 
 .table-wrap.table-full {
   max-height: 70vh;
 }
 
+.table-wrap.table-compact {
+  --table-min-width: 720px;
+}
+
+.table-wrap.table-full:not(.show-ranks):not(.show-trends):not(.show-perf-detail) {
+  --table-min-width: 720px;
+}
+
+.table-wrap.table-compact:not(.show-perf-detail) {
+  --table-min-width: 640px;
+}
+
+
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 980px;
-}
-
-.table-wrap.table-compact table {
-  min-width: 720px;
+  min-width: var(--table-min-width);
 }
 
 thead th {
@@ -683,8 +787,79 @@ thead th {
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  padding: 14px 16px;
+  padding: 0;
   z-index: 2;
+}
+
+thead th:first-child,
+thead th:nth-child(2) {
+  left: 0;
+  z-index: 6;
+}
+
+thead th:nth-child(2) {
+  left: var(--sticky-col-2-left);
+}
+
+thead th.is-active {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.05)),
+    var(--accent-cool);
+}
+
+.sort-button {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 14px 16px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sort-button:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.7);
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+
+.sort-icon {
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 7px solid rgba(248, 250, 252, 0.7);
+  transition: transform 0.2s ease, border-top-color 0.2s ease;
+}
+
+thead th.is-active .sort-icon {
+  border-top-color: #ffffff;
+}
+
+thead th.is-asc .sort-icon {
+  transform: rotate(180deg);
+}
+
+.col-shares,
+.col-ranks,
+.col-trends,
+.col-perf-detail {
+  display: none;
+}
+
+.table-wrap.show-shares .col-shares,
+.table-wrap.show-ranks .col-ranks,
+.table-wrap.show-trends .col-trends,
+.table-wrap.show-perf-detail .col-perf-detail {
+  display: table-cell;
 }
 
 tbody td {
@@ -693,13 +868,34 @@ tbody td {
   font-size: 14px;
 }
 
+tbody tr {
+  background-color: var(--row-odd);
+}
+
 tbody tr:nth-child(even) {
-  background: rgba(246, 243, 236, 0.6);
+  background-color: var(--row-even);
 }
 
 tbody tr:hover {
-  background: rgba(224, 122, 95, 0.12);
+  background-color: var(--row-hover);
 }
+
+.table-wrap tbody td:first-child,
+.table-wrap tbody td:nth-child(2) {
+  position: sticky;
+  background: inherit;
+  z-index: 2;
+}
+
+.table-wrap tbody td:first-child {
+  left: 0;
+}
+
+.table-wrap tbody td:nth-child(2) {
+  left: var(--sticky-col-2-left);
+  z-index: 3;
+}
+
 
 .num {
   text-align: right;
@@ -840,11 +1036,150 @@ tbody tr:hover {
   .section-header {
     align-items: flex-start;
   }
-
-  table {
-    min-width: 720px;
-  }
 }
+"#;
+
+const REPORT_SCRIPT: &str = r#"
+(() => {
+  const wrap = document.querySelector(".table-wrap");
+  if (!wrap) return;
+
+  const table = wrap.querySelector("table");
+  if (!table) return;
+
+  const tbody = table.querySelector("tbody");
+  if (!tbody) return;
+
+  const rows = Array.from(tbody.querySelectorAll("tr"));
+  rows.forEach((row, index) => {
+    row.dataset.index = String(index);
+  });
+
+  const headers = Array.from(table.querySelectorAll("thead th[data-sort]"));
+
+  const updateStickyOffsets = () => {
+    const headRow = table.querySelector("thead tr");
+    if (!headRow || headRow.children.length < 2) return;
+    const firstWidth = headRow.children[0].getBoundingClientRect().width;
+    const secondWidth = headRow.children[1].getBoundingClientRect().width;
+    if (!Number.isFinite(firstWidth) || !Number.isFinite(secondWidth)) return;
+    wrap.style.setProperty("--sticky-col-2-left", `${firstWidth}px`);
+    wrap.style.setProperty("--sticky-cols-width", `${firstWidth + secondWidth}px`);
+  };
+
+  const setToggleState = (button, isOn) => {
+    button.classList.toggle("is-on", isOn);
+    button.setAttribute("aria-pressed", isOn ? "true" : "false");
+  };
+
+  const toggles = Array.from(document.querySelectorAll(".table-controls [data-group]"));
+  toggles.forEach((button) => {
+    const group = button.dataset.group;
+    if (!group) return;
+    const className = `show-${group}`;
+    setToggleState(button, wrap.classList.contains(className));
+    button.addEventListener("click", () => {
+      const isOn = !wrap.classList.contains(className);
+      wrap.classList.toggle(className, isOn);
+      setToggleState(button, isOn);
+      updateStickyOffsets();
+    });
+  });
+
+  const parseNumber = (value) => {
+    const cleaned = value.replace(/[%\s,]/g, "");
+    if (!cleaned || cleaned === "-") return Number.NaN;
+    const num = Number(cleaned);
+    return Number.isFinite(num) ? num : Number.NaN;
+  };
+
+  const compareNumbers = (aVal, bVal, dir) => {
+    const aInvalid = Number.isNaN(aVal);
+    const bInvalid = Number.isNaN(bVal);
+    if (aInvalid && bInvalid) return 0;
+    if (aInvalid) return 1;
+    if (bInvalid) return -1;
+    return dir === "asc" ? aVal - bVal : bVal - aVal;
+  };
+
+  const compareText = (aVal, bVal, dir) => {
+    const cmp = aVal.localeCompare(bVal, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+    return dir === "asc" ? cmp : -cmp;
+  };
+
+  const setActive = (activeTh, dir) => {
+    headers.forEach((th) => {
+      th.classList.remove("is-active", "is-asc", "is-desc");
+      th.setAttribute("aria-sort", "none");
+    });
+    activeTh.classList.add("is-active");
+    activeTh.classList.add(dir === "asc" ? "is-asc" : "is-desc");
+    activeTh.setAttribute("aria-sort", dir === "asc" ? "ascending" : "descending");
+  };
+
+  const getCellText = (row, index) => {
+    const cell = row.children[index];
+    if (!cell) return "";
+    return cell.textContent.trim();
+  };
+
+  if (headers.length > 0) {
+    headers.forEach((th, index) => {
+      const button = th.querySelector("button.sort-button");
+      if (!button) return;
+      button.addEventListener("click", () => {
+        const sortType = th.dataset.sort;
+        let dir = table.dataset.sortDir === "asc" ? "desc" : "asc";
+        if (table.dataset.sortIndex !== String(index)) {
+          dir = "asc";
+        }
+        if (sortType === "index") {
+          dir = "asc";
+        }
+
+        table.dataset.sortIndex = String(index);
+        table.dataset.sortDir = dir;
+        setActive(th, dir);
+
+        const sorted = rows.slice().sort((a, b) => {
+          const aIndex = Number(a.dataset.index);
+          const bIndex = Number(b.dataset.index);
+          if (sortType === "index") {
+            return aIndex - bIndex;
+          }
+
+          const aText = getCellText(a, index);
+          const bText = getCellText(b, index);
+
+          let cmp = 0;
+          if (sortType === "num") {
+            const aVal = parseNumber(aText);
+            const bVal = parseNumber(bText);
+            cmp = compareNumbers(aVal, bVal, dir);
+          } else {
+            cmp = compareText(aText, bText, dir);
+          }
+
+          if (cmp !== 0) return cmp;
+          return aIndex - bIndex;
+        });
+
+        const fragment = document.createDocumentFragment();
+        sorted.forEach((row) => fragment.appendChild(row));
+        tbody.appendChild(fragment);
+      });
+    });
+  }
+
+  window.addEventListener("resize", () => {
+    updateStickyOffsets();
+  });
+
+  updateStickyOffsets();
+})();
 "#;
 
 const GITHUB_SVG: &str = r#"<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.53 2.87 8.38 6.84 9.74.5.1.68-.22.68-.48 0-.24-.01-.86-.01-1.7-2.78.62-3.37-1.38-3.37-1.38-.45-1.18-1.1-1.5-1.1-1.5-.9-.64.07-.63.07-.63 1 .07 1.52 1.05 1.52 1.05.9 1.57 2.36 1.12 2.94.86.09-.67.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.04 1.03-2.76-.1-.26-.45-1.3.1-2.72 0 0 .84-.27 2.75 1.03a9.28 9.28 0 0 1 2.5-.35c.85 0 1.7.12 2.5.35 1.9-1.3 2.74-1.03 2.74-1.03.56 1.42.2 2.46.1 2.72.64.72 1.03 1.64 1.03 2.76 0 3.94-2.34 4.8-4.57 5.06.36.32.68.95.68 1.92 0 1.38-.01 2.49-.01 2.83 0 .26.18.58.69.48A10.07 10.07 0 0 0 22 12.26C22 6.58 17.52 2 12 2z"/></svg>"#;
