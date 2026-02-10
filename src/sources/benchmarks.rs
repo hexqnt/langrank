@@ -110,7 +110,13 @@ fn compute_benchmark_scores_sync(data: &[u8]) -> Result<FxHashMap<String, f64>> 
         if count == 0 {
             continue;
         }
-        let score = (sum_ln / (count as f64)).exp();
+        let Ok(count_u32) = u32::try_from(count) else {
+            eprintln!(
+                "Warning: benchmark sample count for {lang} too large ({count}); skipping score"
+            );
+            continue;
+        };
+        let score = (sum_ln / f64::from(count_u32)).exp();
         if score.is_finite() {
             scores.insert(lang, score);
         }

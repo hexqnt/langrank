@@ -26,6 +26,7 @@ pub const ARCHIVE_CSV_HELP: &str =
     about = "Fetch language popularity indexes (TIOBE, PYPL), benchmark data, and compute a Schulze ranking.",
     version = env!("CARGO_PKG_VERSION")
 )]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
     #[arg(
         long,

@@ -174,24 +174,23 @@ pub fn parse_percent(value: &str) -> Option<f64> {
     let mut saw_decimal = false;
 
     for ch in value.chars() {
-        match ch {
-            '0'..='9' => {
-                buf.push(ch);
-                saw_digit = true;
+        if ch.is_ascii_digit() {
+            buf.push(ch);
+            saw_digit = true;
+        } else if matches!(ch, '.' | ',') {
+            if !saw_decimal {
+                buf.push('.');
+                saw_decimal = true;
             }
-            '.' | ',' => {
-                if !saw_decimal {
-                    buf.push('.');
-                    saw_decimal = true;
-                }
+        } else if matches!(ch, '-' | '\u{2212}' | '\u{2013}' | '\u{2014}') {
+            if buf.is_empty() {
+                buf.push('-');
             }
-            '-' | '\u{2212}' | '\u{2013}' | '\u{2014}' => {
-                if buf.is_empty() {
-                    buf.push('-');
-                }
-            }
-            '+' | '%' | ' ' | '\t' | '\n' | '\r' | '\u{00a0}' | '\u{202f}' => {}
-            _ => {}
+        } else if matches!(
+            ch,
+            '+' | '%' | ' ' | '\t' | '\n' | '\r' | '\u{00a0}' | '\u{202f}'
+        ) {
+            // Ignore separators and whitespace.
         }
     }
 

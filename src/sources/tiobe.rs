@@ -15,10 +15,27 @@ pub async fn fetch_tiobe(client: &Client) -> Result<Vec<RankingEntry>> {
         .context("failed to download TIOBE index")?;
     let document = Html::parse_document(&body);
 
-    let table_selector =
-        Selector::parse("table.table.table-striped.table-top20").expect("valid selector");
-    let row_selector = Selector::parse("tr").expect("valid selector");
-    let cell_selector = Selector::parse("td").expect("valid selector");
+    let table_selector = match Selector::parse("table.table.table-striped.table-top20") {
+        Ok(selector) => selector,
+        Err(err) => {
+            eprintln!("Warning: failed to build TIOBE main table selector: {err}");
+            return Ok(Vec::new());
+        }
+    };
+    let row_selector = match Selector::parse("tr") {
+        Ok(selector) => selector,
+        Err(err) => {
+            eprintln!("Warning: failed to build TIOBE row selector: {err}");
+            return Ok(Vec::new());
+        }
+    };
+    let cell_selector = match Selector::parse("td") {
+        Ok(selector) => selector,
+        Err(err) => {
+            eprintln!("Warning: failed to build TIOBE cell selector: {err}");
+            return Ok(Vec::new());
+        }
+    };
 
     let mut entries = Vec::new();
 
@@ -51,7 +68,13 @@ pub async fn fetch_tiobe(client: &Client) -> Result<Vec<RankingEntry>> {
         }
     }
 
-    let other_table_selector = Selector::parse("table#otherPL").expect("valid selector");
+    let other_table_selector = match Selector::parse("table#otherPL") {
+        Ok(selector) => selector,
+        Err(err) => {
+            eprintln!("Warning: failed to build TIOBE other table selector: {err}");
+            return Ok(aggregate_entries(entries));
+        }
+    };
     if let Some(table) = document.select(&other_table_selector).next() {
         for row in table.select(&row_selector).skip(1) {
             let cells: Vec<String> = row.select(&cell_selector).map(extract_cell_text).collect();

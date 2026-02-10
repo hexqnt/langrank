@@ -43,6 +43,7 @@ pub struct RankingEntry {
     pub trend: Option<f64>,
 }
 
+#[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> Result<()> {
     let use_color = should_use_color();

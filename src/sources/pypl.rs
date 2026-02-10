@@ -27,7 +27,13 @@ pub async fn fetch_pypl(client: &Client) -> Result<Vec<RankingEntry>> {
         return Err(anyhow!("PYPL markers are in unexpected order"));
     }
     let raw_fragment = &body[start_idx..end_idx];
-    let cell_selector = Selector::parse("td").expect("valid selector");
+    let cell_selector = match Selector::parse("td") {
+        Ok(selector) => selector,
+        Err(err) => {
+            eprintln!("Warning: failed to build PYPL cell selector: {err}");
+            return Ok(Vec::new());
+        }
+    };
 
     let mut entries = Vec::new();
 

@@ -41,6 +41,7 @@ pub async fn save_html_report(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_html_report(context: &HtmlReportContext<'_>) -> String {
     let generated_at = context
         .run_started_at

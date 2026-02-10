@@ -7,6 +7,8 @@ description = "A command-line tool to rank programming languages based on variou
 repository = "https://github.com/hexqnt/langrank"
 homepage = "https://langrank.hexq.ru"
 readme = "README.md"
+keywords = ["programming-language", "ranking", "cli", "benchmark", "schulze"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0"
@@ -52,7 +54,8 @@ opt-level = 3
 # ]
 
 [lints.clippy]
-all = "warn"
-pedantic = "warn"
-nursery = "warn"
-cargo = "warn"
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+multiple_crate_versions = "allow"

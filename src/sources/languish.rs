@@ -118,7 +118,14 @@ pub async fn fetch_languish(client: &Client) -> Result<Vec<RankingEntry>> {
     });
     let mut entries: Vec<super::RawEntry> = Vec::with_capacity(per_lang.len());
     for (idx, (name, mean, trend)) in per_lang.into_iter().enumerate() {
-        let rank = Some((idx as u32) + 1);
+        let rank = u32::try_from(idx)
+            .ok()
+            .and_then(|value| value.checked_add(1));
+        if rank.is_none() {
+            eprintln!(
+                "Warning: Languish rank overflow at index {idx}; omitting rank for {name}"
+            );
+        }
         entries.push(super::RawEntry {
             lang: name,
             rank,
@@ -378,7 +385,19 @@ fn build_items_by_name_date(
 
 fn as_f64(v: &serde_json::Value) -> f64 {
     v.as_f64()
-        .or_else(|| v.as_i64().map(|x| x as f64))
+        .or_else(|| {
+            v.as_i64().and_then(|value| {
+                u32::try_from(value).map_or_else(
+                    |_| {
+                        eprintln!(
+                            "Warning: Languish metric value {value} out of range for f64; ignoring"
+                        );
+                        None
+                    },
+                    |value| Some(f64::from(value)),
+                )
+            })
+        })
         .unwrap_or(0.0)
 }
 

@@ -54,7 +54,10 @@ impl ProgressState {
         let use_ascii = is_dumb_term();
         let multi = MultiProgress::new();
         multi.set_draw_target(ProgressDrawTarget::stderr_with_hz(15));
-        let style = ProgressStyle::with_template("{spinner} {msg}").unwrap();
+        let style = ProgressStyle::with_template("{spinner} {msg}").unwrap_or_else(|err| {
+            eprintln!("Warning: failed to set progress template: {err}");
+            ProgressStyle::default_spinner()
+        });
         let style = if use_ascii {
             style.tick_chars(SPINNER_TICKS_ASCII)
         } else if use_color {
