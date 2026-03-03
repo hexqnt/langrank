@@ -3,16 +3,17 @@ use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
 use rustc_hash::FxHashMap;
 use scraper::{Html, Selector};
-use std::cmp::Ordering;
+use serde_json::Value;
+use std::sync::OnceLock;
 
-use super::fetch_text_with_retry;
+use super::{RawEntry, aggregate_entries, fetch_text_with_retry};
 
 const LANGUISH_INDEX_URL: &str = "https://tjpalmer.github.io/languish/";
 
 #[derive(Debug)]
 struct Table {
     keys: Vec<String>,
-    rows: Vec<Vec<serde_json::Value>>,
+    rows: Vec<Vec<Value>>,
 }
 
 #[derive(Debug)]
@@ -111,36 +112,26 @@ pub async fn fetch_languish(client: &Client) -> Result<Vec<RankingEntry>> {
     }
 
     // 9) Compute ranks by descending mean
-    per_lang.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
-    });
-    let mut entries: Vec<super::RawEntry> = Vec::with_capacity(per_lang.len());
+    per_lang.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut entries: Vec<RawEntry> = Vec::with_capacity(per_lang.len());
     for (idx, (name, mean, trend)) in per_lang.into_iter().enumerate() {
         let rank = u32::try_from(idx)
             .ok()
             .and_then(|value| value.checked_add(1));
         if rank.is_none() {
-            eprintln!(
-                "Warning: Languish rank overflow at index {idx}; omitting rank for {name}"
-            );
+            eprintln!("Warning: Languish rank overflow at index {idx}; omitting rank for {name}");
         }
-        entries.push(super::RawEntry {
-            lang: name,
-            rank,
-            share: mean,
-            trend,
-        });
+        if let Some(entry) = RawEntry::parse(name.as_str(), rank, mean, trend) {
+            entries.push(entry);
+        }
     }
 
-    Ok(super::aggregate_entries(entries))
+    Ok(aggregate_entries(entries))
 }
 
 fn extract_main_js_url(index_html: &str) -> Option<String> {
     let doc = Html::parse_document(index_html);
-    let selector = Selector::parse("script[src]").ok()?;
-    for node in doc.select(&selector) {
+    for node in doc.select(script_selector()) {
         if let Some(src) = node.value().attr("src")
             && src.contains("/static/js/main")
             && src.ends_with(".chunk.js")
@@ -155,6 +146,12 @@ fn extract_main_js_url(index_html: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn script_selector() -> &'static Selector {
+    static SELECTOR: OnceLock<Selector> = OnceLock::new();
+    SELECTOR
+        .get_or_init(|| Selector::parse("script[src]").expect("Languish script selector is valid"))
 }
 
 fn extract_json_parse_payload(js: &str) -> Option<String> {
@@ -245,8 +242,36 @@ struct MetricsRaw {
     stars: f64,
 }
 
+#[derive(Clone, Copy)]
+struct MetricColumns {
+    date: usize,
+    issues: usize,
+    pulls: usize,
+    so_questions: usize,
+    stars: usize,
+}
+
+#[derive(Clone, Copy)]
+struct ItemColumns {
+    name: usize,
+    metrics: MetricColumns,
+}
+
+#[derive(Clone, Copy)]
+struct MetricsRow<'a> {
+    date: &'a str,
+    metrics: MetricsRaw,
+}
+
+#[derive(Clone, Copy)]
+struct ItemRow<'a> {
+    name: &'a str,
+    date: &'a str,
+    metrics: MetricsRaw,
+}
+
 fn parse_languish_tables(js: &str) -> Result<LanguishData> {
-    let v: serde_json::Value =
+    let v: Value =
         serde_json::from_str(js).context("failed to parse decoded Languish JSON object")?;
     let items_v = v
         .get("items")
@@ -283,7 +308,7 @@ fn parse_languish_tables(js: &str) -> Result<LanguishData> {
     Ok(LanguishData { items, sums })
 }
 
-fn table_keys(v: &serde_json::Value) -> Result<Vec<String>> {
+fn table_keys(v: &Value) -> Result<Vec<String>> {
     let arr = v
         .as_array()
         .ok_or_else(|| anyhow!("expected array for keys"))?;
@@ -293,7 +318,7 @@ fn table_keys(v: &serde_json::Value) -> Result<Vec<String>> {
         .collect())
 }
 
-fn table_rows(table_name: &str, v: &serde_json::Value) -> Result<Vec<Vec<serde_json::Value>>> {
+fn table_rows(table_name: &str, v: &Value) -> Result<Vec<Vec<Value>>> {
     let rows = v
         .as_array()
         .ok_or_else(|| anyhow!("expected array for {table_name} rows"))?;
@@ -307,13 +332,12 @@ fn table_rows(table_name: &str, v: &serde_json::Value) -> Result<Vec<Vec<serde_j
 }
 
 fn collect_sorted_dates(sums: &Table) -> Result<Vec<String>> {
-    let idx_date = index_of(&sums.keys, "date")?;
+    let columns = metric_columns(&sums.keys)?;
     let mut dates: Vec<String> = sums
         .rows
         .iter()
-        .filter_map(|row| row.get(idx_date))
-        .filter_map(|v| v.as_str())
-        .map(std::string::ToString::to_string)
+        .filter_map(|row| parse_metrics_row(row, columns))
+        .map(|row| row.date.to_string())
         .collect();
     dates.sort_unstable();
     dates.dedup();
@@ -326,25 +350,52 @@ fn index_of(keys: &[String], name: &str) -> Result<usize> {
         .ok_or_else(|| anyhow!("missing column '{name}'"))
 }
 
+fn metric_columns(keys: &[String]) -> Result<MetricColumns> {
+    Ok(MetricColumns {
+        date: index_of(keys, "date")?,
+        issues: index_of(keys, "issues")?,
+        pulls: index_of(keys, "pulls")?,
+        so_questions: index_of(keys, "soQuestions")?,
+        stars: index_of(keys, "stars")?,
+    })
+}
+
+fn item_columns(keys: &[String]) -> Result<ItemColumns> {
+    Ok(ItemColumns {
+        name: index_of(keys, "name")?,
+        metrics: metric_columns(keys)?,
+    })
+}
+
+fn parse_metrics_row(row: &[Value], columns: MetricColumns) -> Option<MetricsRow<'_>> {
+    let date = row.get(columns.date).and_then(Value::as_str)?;
+    let metrics = MetricsRaw {
+        issues: row.get(columns.issues).map_or(0.0, as_f64),
+        pulls: row.get(columns.pulls).map_or(0.0, as_f64),
+        so_questions: row.get(columns.so_questions).map_or(0.0, as_f64),
+        stars: row.get(columns.stars).map_or(0.0, as_f64),
+    };
+    Some(MetricsRow { date, metrics })
+}
+
+fn parse_item_row(row: &[Value], columns: ItemColumns) -> Option<ItemRow<'_>> {
+    let name = row.get(columns.name).and_then(Value::as_str)?;
+    let parsed = parse_metrics_row(row, columns.metrics)?;
+    Some(ItemRow {
+        name,
+        date: parsed.date,
+        metrics: parsed.metrics,
+    })
+}
+
 fn build_sums_by_date(sums: &Table) -> Result<FxHashMap<String, MetricsRaw>> {
     let mut map = FxHashMap::default();
-    let idx_date = index_of(&sums.keys, "date")?;
-    let idx_issues = index_of(&sums.keys, "issues")?;
-    let idx_pulls = index_of(&sums.keys, "pulls")?;
-    let idx_so = index_of(&sums.keys, "soQuestions")?;
-    let idx_stars = index_of(&sums.keys, "stars")?;
+    let columns = metric_columns(&sums.keys)?;
     for row in &sums.rows {
-        let date = match row.get(idx_date).and_then(|value| value.as_str()) {
-            Some(value) => value.to_string(),
-            None => continue,
+        let Some(parsed) = parse_metrics_row(row, columns) else {
+            continue;
         };
-        let m = MetricsRaw {
-            issues: row.get(idx_issues).map_or(0.0, as_f64),
-            pulls: row.get(idx_pulls).map_or(0.0, as_f64),
-            so_questions: row.get(idx_so).map_or(0.0, as_f64),
-            stars: row.get(idx_stars).map_or(0.0, as_f64),
-        };
-        map.insert(date, m);
+        map.insert(parsed.date.to_string(), parsed.metrics);
     }
     Ok(map)
 }
@@ -353,50 +404,31 @@ fn build_items_by_name_date(
     items: &Table,
 ) -> Result<FxHashMap<String, FxHashMap<String, MetricsRaw>>> {
     let mut map: FxHashMap<String, FxHashMap<String, MetricsRaw>> = FxHashMap::default();
-    let idx_name = index_of(&items.keys, "name")?;
-    let idx_date = index_of(&items.keys, "date")?;
-    let idx_issues = index_of(&items.keys, "issues")?;
-    let idx_pulls = index_of(&items.keys, "pulls")?;
-    let idx_so = index_of(&items.keys, "soQuestions")?;
-    let idx_stars = index_of(&items.keys, "stars")?;
+    let columns = item_columns(&items.keys)?;
     for row in &items.rows {
-        let name = match row.get(idx_name).and_then(|value| value.as_str()) {
-            Some(value) => value.to_string(),
-            None => continue,
+        let Some(parsed) = parse_item_row(row, columns) else {
+            continue;
         };
-        let date = match row.get(idx_date).and_then(|value| value.as_str()) {
-            Some(value) => value.to_string(),
-            None => continue,
-        };
-        if date.as_str() < "2012Q1" {
+        if parsed.date < "2012Q1" {
             // Match Languish filtering baseline
             continue;
         }
-        let m = MetricsRaw {
-            issues: row.get(idx_issues).map_or(0.0, as_f64),
-            pulls: row.get(idx_pulls).map_or(0.0, as_f64),
-            so_questions: row.get(idx_so).map_or(0.0, as_f64),
-            stars: row.get(idx_stars).map_or(0.0, as_f64),
-        };
-        map.entry(name).or_default().insert(date, m);
+        map.entry(parsed.name.to_string())
+            .or_default()
+            .insert(parsed.date.to_string(), parsed.metrics);
     }
     Ok(map)
 }
 
-fn as_f64(v: &serde_json::Value) -> f64 {
+fn as_f64(v: &Value) -> f64 {
     v.as_f64()
         .or_else(|| {
-            v.as_i64().and_then(|value| {
-                u32::try_from(value).map_or_else(
-                    |_| {
-                        eprintln!(
-                            "Warning: Languish metric value {value} out of range for f64; ignoring"
-                        );
-                        None
-                    },
-                    |value| Some(f64::from(value)),
-                )
-            })
+            v.as_i64()
+                .and_then(|value| u32::try_from(value).ok().map(f64::from))
+        })
+        .or_else(|| {
+            v.as_u64()
+                .and_then(|value| u32::try_from(value).ok().map(f64::from))
         })
         .unwrap_or(0.0)
 }

@@ -57,8 +57,7 @@ async fn latest_completed_run_id(client: &Client) -> Result<String> {
         if run_id.is_empty() {
             continue;
         }
-        let row_text = row.text().collect::<Vec<_>>().join(" ").to_lowercase();
-        if is_completed_status(&row_text) {
+        if is_completed_status(row.text()) {
             return Ok(run_id.to_string());
         }
     }
@@ -104,18 +103,20 @@ fn resolve_techempower_url(href: &str) -> String {
     }
 }
 
-fn is_completed_status(row_text: &str) -> bool {
-    let tokens: Vec<&str> = row_text
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
+fn is_completed_status<'a>(text_chunks: impl Iterator<Item = &'a str>) -> bool {
+    let mut previous_was_not = false;
+    for token in text_chunks
+        .flat_map(|chunk| chunk.split(|ch: char| !ch.is_ascii_alphanumeric()))
         .filter(|token| !token.is_empty())
-        .collect();
-    for (idx, token) in tokens.iter().enumerate() {
-        if *token == "completed" {
-            if idx > 0 && tokens[idx - 1] == "not" {
+    {
+        if token.eq_ignore_ascii_case("completed") {
+            if previous_was_not {
+                previous_was_not = false;
                 continue;
             }
             return true;
         }
+        previous_was_not = token.eq_ignore_ascii_case("not");
     }
     false
 }

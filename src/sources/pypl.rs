@@ -2,12 +2,43 @@ use crate::RankingEntry;
 use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
 use scraper::{Html, Selector};
+use std::sync::OnceLock;
 
 use super::{
     RawEntry, aggregate_entries, extract_cell_text, fetch_text_with_retry, parse_percent, parse_u32,
 };
 
 const PYPL_URL: &str = "https://pypl.github.io/PYPL.html";
+
+struct PyplRow<'a> {
+    rank: &'a str,
+    lang: &'a str,
+    share: &'a str,
+    trend: &'a str,
+}
+
+impl<'a> PyplRow<'a> {
+    fn parse(cells: &'a [String]) -> Option<Self> {
+        match cells {
+            [rank, _, lang, share, trend, ..] => Some(Self {
+                rank,
+                lang,
+                share,
+                trend,
+            }),
+            _ => None,
+        }
+    }
+
+    fn into_entry(self) -> Option<RawEntry> {
+        RawEntry::parse(
+            self.lang,
+            parse_u32(self.rank),
+            parse_percent(self.share).unwrap_or(0.0),
+            parse_percent(self.trend),
+        )
+    }
+}
 
 pub async fn fetch_pypl(client: &Client) -> Result<Vec<RankingEntry>> {
     let body = fetch_text_with_retry(client, PYPL_URL)
@@ -27,14 +58,6 @@ pub async fn fetch_pypl(client: &Client) -> Result<Vec<RankingEntry>> {
         return Err(anyhow!("PYPL markers are in unexpected order"));
     }
     let raw_fragment = &body[start_idx..end_idx];
-    let cell_selector = match Selector::parse("td") {
-        Ok(selector) => selector,
-        Err(err) => {
-            eprintln!("Warning: failed to build PYPL cell selector: {err}");
-            return Ok(Vec::new());
-        }
-    };
-
     let mut entries = Vec::new();
 
     for line in raw_fragment.lines() {
@@ -51,20 +74,16 @@ pub async fn fetch_pypl(client: &Client) -> Result<Vec<RankingEntry>> {
         }
         let row_html = format!("<table>{cleaned}</table>");
         let row = Html::parse_fragment(&row_html);
-        let cells: Vec<String> = row.select(&cell_selector).map(extract_cell_text).collect();
-        if cells.len() >= 5 {
-            let rank = parse_u32(&cells[0]);
-            let lang = cells[2].clone();
-            let share = parse_percent(&cells[3]).unwrap_or(0.0);
-            let trend = parse_percent(&cells[4]);
-            entries.push(RawEntry {
-                lang,
-                rank,
-                share,
-                trend,
-            });
+        let cells: Vec<String> = row.select(cell_selector()).map(extract_cell_text).collect();
+        if let Some(entry) = PyplRow::parse(&cells).and_then(PyplRow::into_entry) {
+            entries.push(entry);
         }
     }
 
     Ok(aggregate_entries(entries))
+}
+
+fn cell_selector() -> &'static Selector {
+    static SELECTOR: OnceLock<Selector> = OnceLock::new();
+    SELECTOR.get_or_init(|| Selector::parse("td").expect("PYPL cell selector is valid"))
 }

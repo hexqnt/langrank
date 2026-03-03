@@ -21,13 +21,40 @@ use tokio::time::sleep;
 
 const MAX_RETRIES: usize = 3;
 
-#[derive(Debug)]
-pub struct RawEntry {
-    pub lang: String,
-    pub rank: Option<u32>,
-    pub share: f64,
-    pub trend: Option<f64>,
+mod raw_entry {
+    use super::canonicalize_language;
+
+    #[derive(Debug)]
+    pub struct RawEntry {
+        lang: String,
+        rank: Option<u32>,
+        share: f64,
+        trend: Option<f64>,
+    }
+
+    impl RawEntry {
+        pub fn parse(
+            lang: &str,
+            rank: Option<u32>,
+            share: f64,
+            trend: Option<f64>,
+        ) -> Option<Self> {
+            let lang = canonicalize_language(lang)?;
+            Some(Self {
+                lang,
+                rank,
+                share,
+                trend,
+            })
+        }
+
+        pub fn into_parts(self) -> (String, Option<u32>, f64, Option<f64>) {
+            (self.lang, self.rank, self.share, self.trend)
+        }
+    }
 }
+
+pub use raw_entry::RawEntry;
 
 #[derive(Default)]
 struct AggregatedEntry {
@@ -112,15 +139,13 @@ pub fn aggregate_entries(entries: Vec<RawEntry>) -> Vec<RankingEntry> {
     let mut aggregated: FxHashMap<String, AggregatedEntry> = FxHashMap::default();
 
     for entry in entries {
-        let Some(normalized) = canonicalize_language(entry.lang.as_str()) else {
-            continue;
-        };
-        let agg = aggregated.entry(normalized).or_default();
-        agg.share_sum += entry.share;
-        if let Some(rank) = entry.rank {
+        let (lang, rank, share, trend) = entry.into_parts();
+        let agg = aggregated.entry(lang).or_default();
+        agg.share_sum += share;
+        if let Some(rank) = rank {
             agg.min_rank = Some(agg.min_rank.map_or(rank, |existing| existing.min(rank)));
         }
-        if let Some(trend) = entry.trend {
+        if let Some(trend) = trend {
             agg.trend_sum += trend;
             agg.trend_seen = true;
         }
@@ -160,12 +185,18 @@ pub fn extract_cell_text(cell: ElementRef<'_>) -> String {
 }
 
 pub fn parse_u32(value: &str) -> Option<u32> {
-    value
-        .chars()
-        .filter(char::is_ascii_digit)
-        .collect::<String>()
-        .parse::<u32>()
-        .ok()
+    let mut parsed = 0_u32;
+    let mut saw_digit = false;
+
+    for byte in value.bytes() {
+        if byte.is_ascii_digit() {
+            let digit = u32::from(byte - b'0');
+            parsed = parsed.checked_mul(10)?.checked_add(digit)?;
+            saw_digit = true;
+        }
+    }
+
+    saw_digit.then_some(parsed)
 }
 
 pub fn parse_percent(value: &str) -> Option<f64> {

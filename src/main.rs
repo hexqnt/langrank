@@ -617,8 +617,8 @@ fn limit_languages(
          (count_b, pop_b, perf_b, lang_b): &(usize, f64, f64, String)| {
             count_b
                 .cmp(count_a)
-                .then_with(|| pop_b.partial_cmp(pop_a).unwrap_or(Ordering::Equal))
-                .then_with(|| perf_b.partial_cmp(perf_a).unwrap_or(Ordering::Equal))
+                .then_with(|| pop_b.total_cmp(pop_a))
+                .then_with(|| perf_b.total_cmp(perf_a))
                 .then_with(|| lang_a.cmp(lang_b))
         };
     let nth = max_languages.saturating_sub(1);
@@ -665,10 +665,11 @@ where
         scored.push((idx, metric(lang.as_str())));
     }
     scored.sort_by(|(idx_a, score_a), (idx_b, score_b)| {
-        let mut ord = score_a.partial_cmp(score_b).unwrap_or(Ordering::Equal);
-        if !ascending {
-            ord = ord.reverse();
-        }
+        let ord = if ascending {
+            score_a.total_cmp(score_b)
+        } else {
+            score_b.total_cmp(score_a)
+        };
         ord.then_with(|| languages[*idx_a].cmp(&languages[*idx_b]))
     });
     scored.into_iter().map(|(idx, _)| idx).collect()
