@@ -8,9 +8,16 @@ use serde_json::Value;
 use super::{canonicalize_language, fetch_bytes_with_retry, fetch_text_with_retry};
 
 const TFB_STATUS_URL: &str = "https://tfb-status.techempower.com";
+const TFB_BENCHMARKS_URL: &str = "https://www.techempower.com/benchmarks/";
 const TEST_WEIGHTS: [f64; 6] = [1.0, 0.75, 0.75, 0.75, 1.5, 1.25];
 const TEST_NAMES: [&str; 6] = ["json", "plaintext", "db", "query", "fortune", "update"];
 pub const TECHEMPOWER_MAX_SCORE: f64 = 6.0;
+const MAX_FALLBACK_RESULTS_URLS: usize = 8;
+const STATIC_FALLBACK_RESULTS_URLS: [&str; 3] = [
+    "https://tfb-status.techempower.com/unzip/results.2025-02-05-22-40-37-331.zip/results/20250130184741/results.json",
+    "https://tfb-status.techempower.com/unzip/results.2023-10-17-15-51-42-846.zip/results/20231011080047/results.json",
+    "https://tfb-status.techempower.com/unzip/results.2022-07-06-02-28-46-055.zip/results/20220630150650/results.json",
+];
 
 #[derive(Debug, Clone, Copy, Default)]
 struct FrameworkScores {
@@ -33,8 +40,41 @@ struct TfbTestMetadata {
 }
 
 pub async fn fetch_techempower(client: &Client) -> Result<FxHashMap<String, f64>> {
+    match fetch_techempower_via_status(client).await {
+        Ok(scores) => Ok(scores),
+        Err(primary_err) => {
+            let fallback_urls = fallback_results_urls(client).await;
+            let mut fallback_errors: Vec<String> = Vec::new();
+
+            for results_url in fallback_urls {
+                match fetch_techempower_for_results_url(client, &results_url).await {
+                    Ok(scores) => return Ok(scores),
+                    Err(err) => fallback_errors.push(format!("{results_url}: {err:#}")),
+                }
+            }
+
+            let fallback_summary = if fallback_errors.is_empty() {
+                "no fallback snapshot URLs were available".to_string()
+            } else {
+                fallback_errors.join(" | ")
+            };
+            Err(anyhow!(
+                "failed to fetch TechEmpower data from status page and fallback snapshots; status error: {primary_err:#}; fallback errors: {fallback_summary}"
+            ))
+        }
+    }
+}
+
+async fn fetch_techempower_via_status(client: &Client) -> Result<FxHashMap<String, f64>> {
     let run_id = latest_completed_run_id(client).await?;
     let results_url = results_url_for_run(client, &run_id).await?;
+    fetch_techempower_for_results_url(client, &results_url).await
+}
+
+async fn fetch_techempower_for_results_url(
+    client: &Client,
+    results_url: &str,
+) -> Result<FxHashMap<String, f64>> {
     let bytes = fetch_bytes_with_retry(client, &results_url)
         .await
         .with_context(|| format!("failed to download TechEmpower results from {results_url}"))?;
@@ -88,19 +128,99 @@ async fn results_url_for_run(client: &Client, run_id: &str) -> Result<String> {
 }
 
 fn resolve_techempower_url(href: &str) -> String {
+    resolve_url(TFB_STATUS_URL, href)
+}
+
+fn resolve_url(base_url: &str, href: &str) -> String {
     if href.starts_with("http://") || href.starts_with("https://") {
         return href.to_string();
     }
-    if let Ok(base) = Url::parse(TFB_STATUS_URL)
+    if let Ok(base) = Url::parse(base_url)
         && let Ok(joined) = base.join(href)
     {
         return joined.to_string();
     }
     if href.starts_with('/') {
-        format!("{TFB_STATUS_URL}{href}")
+        format!("{base_url}{href}")
     } else {
-        format!("{TFB_STATUS_URL}/{href}")
+        format!("{base_url}/{href}")
     }
+}
+
+async fn fallback_results_urls(client: &Client) -> Vec<String> {
+    let mut urls = discover_fallback_results_urls(client)
+        .await
+        .unwrap_or_default();
+
+    for url in STATIC_FALLBACK_RESULTS_URLS {
+        urls.push(url.to_string());
+    }
+
+    urls.sort_unstable();
+    urls.dedup();
+    urls.reverse();
+    urls.truncate(MAX_FALLBACK_RESULTS_URLS);
+    urls
+}
+
+async fn discover_fallback_results_urls(client: &Client) -> Result<Vec<String>> {
+    let html = fetch_text_with_retry(client, TFB_BENCHMARKS_URL)
+        .await
+        .context("failed to fetch TechEmpower benchmarks page for fallback discovery")?;
+    let bundle_url = benchmarks_bundle_url(&html)
+        .ok_or_else(|| anyhow!("unable to locate benchmarks JS bundle for fallback discovery"))?;
+    let bundle = fetch_text_with_retry(client, &bundle_url)
+        .await
+        .with_context(|| format!("failed to fetch TechEmpower benchmarks bundle {bundle_url}"))?;
+    let urls = extract_snapshot_results_urls(&bundle);
+    if urls.is_empty() {
+        return Err(anyhow!(
+            "no fallback snapshot URLs found in TechEmpower benchmarks bundle"
+        ));
+    }
+    Ok(urls)
+}
+
+fn benchmarks_bundle_url(html: &str) -> Option<String> {
+    let document = Html::parse_document(html);
+    let script_selector = Selector::parse("script[src]").ok()?;
+    for script in document.select(&script_selector) {
+        let src = script.value().attr("src")?;
+        if src.contains("assets/index-") && src.ends_with(".js") {
+            return Some(resolve_url(TFB_BENCHMARKS_URL, src));
+        }
+    }
+    None
+}
+
+fn extract_snapshot_results_urls(bundle: &str) -> Vec<String> {
+    const URL_PREFIX: &str = "https://tfb-status.techempower.com/unzip/results.";
+    let mut urls: Vec<String> = Vec::new();
+    let mut rest = bundle;
+
+    while let Some(start) = rest.find(URL_PREFIX) {
+        rest = &rest[start..];
+        let end = rest
+            .find(|ch: char| matches!(ch, '"' | '\'' | '\\') || ch.is_ascii_whitespace())
+            .unwrap_or(rest.len());
+        let raw = &rest[..end];
+        if raw.contains("/results/") {
+            let url = if raw.ends_with("/results.json") {
+                raw.to_string()
+            } else if raw.ends_with('/') {
+                format!("{raw}results.json")
+            } else {
+                format!("{raw}/results.json")
+            };
+            urls.push(url);
+        }
+        rest = &rest[end..];
+    }
+
+    urls.sort_unstable();
+    urls.dedup();
+    urls.reverse();
+    urls
 }
 
 fn is_completed_status<'a>(text_chunks: impl Iterator<Item = &'a str>) -> bool {
@@ -227,4 +347,26 @@ fn calculate_rps_value(run: &Value) -> Option<f64> {
         return None;
     }
     Some(total / (duration_ms / 1000.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_snapshot_results_urls;
+
+    #[test]
+    fn extracts_and_normalizes_snapshot_urls() {
+        let bundle = r#"
+            const a = "https://tfb-status.techempower.com/unzip/results.2025-02-05-22-40-37-331.zip/results/20250130184741";
+            const b = "https://tfb-status.techempower.com/unzip/results.2023-10-17-15-51-42-846.zip/results/20231011080047/results.json";
+            const c = "https://tfb-status.techempower.com/unzip/results.2025-02-05-22-40-37-331.zip/results/20250130184741";
+        "#;
+        let urls = extract_snapshot_results_urls(bundle);
+        assert_eq!(
+            urls,
+            vec![
+                "https://tfb-status.techempower.com/unzip/results.2025-02-05-22-40-37-331.zip/results/20250130184741/results.json",
+                "https://tfb-status.techempower.com/unzip/results.2023-10-17-15-51-42-846.zip/results/20231011080047/results.json",
+            ]
+        );
+    }
 }
