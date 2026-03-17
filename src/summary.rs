@@ -1,5 +1,7 @@
-use crate::SchulzeRecord;
-use crate::formatting::{format_perf, format_trend};
+use crate::formatting::{
+    format_optional_float, format_optional_rank, format_perf_score, format_trend,
+};
+use crate::schulze::SchulzeRecord;
 use chrono::{DateTime, Local};
 use colored::Colorize;
 use std::path::Path;
@@ -133,30 +135,22 @@ fn print_full_schulze_table(records: &[SchulzeRecord]) -> usize {
     println!("{}", separator.bright_black());
 
     for record in records {
-        let tiobe_rank = record
-            .tiobe_rank
-            .map_or_else(|| "-".to_string(), |value| value.to_string());
-        let pypl_rank = record
-            .pypl_rank
-            .map_or_else(|| "-".to_string(), |value| value.to_string());
-        let languish_rank = record
-            .languish_rank
-            .map_or_else(|| "-".to_string(), |value| value.to_string());
+        let tiobe_rank = format_optional_rank(record.tiobe_rank);
+        let pypl_rank = format_optional_rank(record.pypl_rank);
+        let languish_rank = format_optional_rank(record.languish_rank);
         let tiobe_share = format!("{:.2}", record.tiobe_share);
         let pypl_share = format!("{:.2}", record.pypl_share);
         let tiobe_trend = format_trend(record.tiobe_trend);
         let pypl_trend = format_trend(record.pypl_trend);
         let languish_share = format!("{:.2}", record.languish_share);
         let languish_trend = format_trend(record.languish_trend);
-        let bg = format_perf(record.benchmark_score);
-        let te = record
-            .techempower_score
-            .map_or_else(|| "-".to_string(), |value| format!("{value:.2}"));
-        let perf = if record.benchmark_score.is_none() && record.techempower_score.is_none() {
-            "-".to_string()
-        } else {
-            format!("{:.2}", record.perf_score)
-        };
+        let bg = format_optional_float(record.benchmark_score);
+        let te = format_optional_float(record.techempower_score);
+        let perf = format_perf_score(
+            record.perf_score,
+            record.benchmark_score,
+            record.techempower_score,
+        );
         let line = format!(
             "{:>3} | {:<13} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>7} | {:>6} | {:>6} | {:>6} | {:>4}",
             record.position,
@@ -189,15 +183,13 @@ fn print_compact_schulze_table(records: &[SchulzeRecord]) -> usize {
     println!("{}", header.bold().bright_white());
     println!("{}", separator.bright_black());
     for record in records.iter().take(10) {
-        let bg = format_perf(record.benchmark_score);
-        let te = record
-            .techempower_score
-            .map_or_else(|| "-".to_string(), |value| format!("{value:.2}"));
-        let perf = if record.benchmark_score.is_none() && record.techempower_score.is_none() {
-            "-".to_string()
-        } else {
-            format!("{:.2}", record.perf_score)
-        };
+        let bg = format_optional_float(record.benchmark_score);
+        let te = format_optional_float(record.techempower_score);
+        let perf = format_perf_score(
+            record.perf_score,
+            record.benchmark_score,
+            record.techempower_score,
+        );
         let line = format!(
             "{:>3} | {:<13} | {:>6.2} | {:>5.2} | {:>5.2} | {:>4} | {:>4} | {:>4} | {:>4}",
             record.position,

@@ -4,8 +4,9 @@ use rustc_hash::FxHashMap;
 use scraper::{Html, Selector};
 use serde::Deserialize;
 use serde_json::Value;
+use std::path::Path;
 
-use super::{canonicalize_language, fetch_bytes_with_retry, fetch_text_with_retry};
+use super::{CanonicalLanguage, fetch_bytes_with_retry, fetch_text_with_retry};
 
 const TFB_STATUS_URL: &str = "https://tfb-status.techempower.com";
 const TFB_BENCHMARKS_URL: &str = "https://www.techempower.com/benchmarks/";
@@ -75,7 +76,7 @@ async fn fetch_techempower_for_results_url(
     client: &Client,
     results_url: &str,
 ) -> Result<FxHashMap<String, f64>> {
-    let bytes = fetch_bytes_with_retry(client, &results_url)
+    let bytes = fetch_bytes_with_retry(client, results_url)
         .await
         .with_context(|| format!("failed to download TechEmpower results from {results_url}"))?;
     let results: TechempowerResults =
@@ -186,7 +187,11 @@ fn benchmarks_bundle_url(html: &str) -> Option<String> {
     let script_selector = Selector::parse("script[src]").ok()?;
     for script in document.select(&script_selector) {
         let src = script.value().attr("src")?;
-        if src.contains("assets/index-") && src.ends_with(".js") {
+        if src.contains("assets/index-")
+            && Path::new(src)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("js"))
+        {
             return Some(resolve_url(TFB_BENCHMARKS_URL, src));
         }
     }
@@ -294,7 +299,7 @@ fn compute_language_scores(results: &TechempowerResults) -> Result<FxHashMap<Str
             if max_rps <= 0.0 {
                 continue;
             }
-            composite += (scores.rps[idx] / max_rps) * TEST_WEIGHTS[idx];
+            composite = (scores.rps[idx] / max_rps).mul_add(TEST_WEIGHTS[idx], composite);
         }
         if composite <= 0.0 {
             continue;
@@ -318,10 +323,11 @@ fn compute_language_scores(results: &TechempowerResults) -> Result<FxHashMap<Str
 fn map_framework_languages(metadata: &[TfbTestMetadata]) -> FxHashMap<String, String> {
     let mut map: FxHashMap<String, String> = FxHashMap::default();
     for entry in metadata {
-        let Some(lang) = canonicalize_language(entry.language.as_str()) else {
+        let Some(lang) = CanonicalLanguage::parse(entry.language.as_str()) else {
             continue;
         };
-        map.entry(entry.framework.clone()).or_insert(lang);
+        map.entry(entry.framework.clone())
+            .or_insert_with(|| lang.into_string());
     }
     map
 }

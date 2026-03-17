@@ -4,6 +4,7 @@ pub mod pypl;
 pub mod techempower;
 pub mod tiobe;
 
+pub use crate::parsing::{parse_percent, parse_u32};
 pub use benchmarks::{download_benchmark_data, load_benchmark_scores};
 pub use languish::fetch_languish;
 pub use pypl::fetch_pypl;
@@ -22,11 +23,11 @@ use tokio::time::sleep;
 const MAX_RETRIES: usize = 3;
 
 mod raw_entry {
-    use super::canonicalize_language;
+    use super::CanonicalLanguage;
 
     #[derive(Debug)]
     pub struct RawEntry {
-        lang: String,
+        lang: CanonicalLanguage,
         rank: Option<u32>,
         share: f64,
         trend: Option<f64>,
@@ -39,7 +40,7 @@ mod raw_entry {
             share: f64,
             trend: Option<f64>,
         ) -> Option<Self> {
-            let lang = canonicalize_language(lang)?;
+            let lang = CanonicalLanguage::parse(lang)?;
             Some(Self {
                 lang,
                 rank,
@@ -48,13 +49,26 @@ mod raw_entry {
             })
         }
 
-        pub fn into_parts(self) -> (String, Option<u32>, f64, Option<f64>) {
+        pub fn into_parts(self) -> (CanonicalLanguage, Option<u32>, f64, Option<f64>) {
             (self.lang, self.rank, self.share, self.trend)
         }
     }
 }
 
 pub use raw_entry::RawEntry;
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct CanonicalLanguage(String);
+
+impl CanonicalLanguage {
+    pub fn parse(input: &str) -> Option<Self> {
+        canonicalize_language(input).map(Self)
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
 
 #[derive(Default)]
 struct AggregatedEntry {
@@ -136,7 +150,7 @@ fn describe_error(error: &anyhow::Error) -> String {
 }
 
 pub fn aggregate_entries(entries: Vec<RawEntry>) -> Vec<RankingEntry> {
-    let mut aggregated: FxHashMap<String, AggregatedEntry> = FxHashMap::default();
+    let mut aggregated: FxHashMap<CanonicalLanguage, AggregatedEntry> = FxHashMap::default();
 
     for entry in entries {
         let (lang, rank, share, trend) = entry.into_parts();
@@ -154,7 +168,7 @@ pub fn aggregate_entries(entries: Vec<RawEntry>) -> Vec<RankingEntry> {
     let mut result: Vec<RankingEntry> = aggregated
         .into_iter()
         .map(|(lang, agg)| RankingEntry {
-            lang,
+            lang: lang.into_string(),
             rank: agg.min_rank,
             share: agg.share_sum,
             trend: if agg.trend_seen {
@@ -182,54 +196,6 @@ pub fn extract_cell_text(cell: ElementRef<'_>) -> String {
         out.push_str(trimmed);
     }
     out
-}
-
-pub fn parse_u32(value: &str) -> Option<u32> {
-    let mut parsed = 0_u32;
-    let mut saw_digit = false;
-
-    for byte in value.bytes() {
-        if byte.is_ascii_digit() {
-            let digit = u32::from(byte - b'0');
-            parsed = parsed.checked_mul(10)?.checked_add(digit)?;
-            saw_digit = true;
-        }
-    }
-
-    saw_digit.then_some(parsed)
-}
-
-pub fn parse_percent(value: &str) -> Option<f64> {
-    let mut buf = String::with_capacity(value.len());
-    let mut saw_digit = false;
-    let mut saw_decimal = false;
-
-    for ch in value.chars() {
-        if ch.is_ascii_digit() {
-            buf.push(ch);
-            saw_digit = true;
-        } else if matches!(ch, '.' | ',') {
-            if !saw_decimal {
-                buf.push('.');
-                saw_decimal = true;
-            }
-        } else if matches!(ch, '-' | '\u{2212}' | '\u{2013}' | '\u{2014}') {
-            if buf.is_empty() {
-                buf.push('-');
-            }
-        } else if matches!(
-            ch,
-            '+' | '%' | ' ' | '\t' | '\n' | '\r' | '\u{00a0}' | '\u{202f}'
-        ) {
-            // Ignore separators and whitespace.
-        }
-    }
-
-    if !saw_digit {
-        return None;
-    }
-
-    buf.parse::<f64>().ok()
 }
 
 fn normalize_alias_key(input: &str) -> String {

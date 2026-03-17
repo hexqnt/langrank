@@ -1,4 +1,7 @@
-use crate::SchulzeRecord;
+use crate::formatting::{
+    format_optional_float, format_optional_rank, format_perf_score, format_trend_with_class,
+};
+use crate::schulze::SchulzeRecord;
 use crate::write_output_file;
 use anyhow::Result;
 use chrono::{DateTime, Local};
@@ -298,10 +301,14 @@ fn render_group_toggle(label: &str, group: &str, enabled: bool) -> Markup {
 }
 
 fn render_full_table_row(record: &SchulzeRecord) -> Markup {
-    let (t_trend, t_class) = format_trend_html(record.tiobe_trend);
-    let (p_trend, p_class) = format_trend_html(record.pypl_trend);
-    let (l_trend, l_class) = format_trend_html(record.languish_trend);
-    let perf = format_perf_combined(record);
+    let (t_trend, t_class) = format_trend_with_class(record.tiobe_trend);
+    let (p_trend, p_class) = format_trend_with_class(record.pypl_trend);
+    let (l_trend, l_class) = format_trend_with_class(record.languish_trend);
+    let perf = format_perf_score(
+        record.perf_score,
+        record.benchmark_score,
+        record.techempower_score,
+    );
     html! {
         tr {
             td class="num" { (record.position) }
@@ -330,7 +337,11 @@ fn render_full_table_row(record: &SchulzeRecord) -> Markup {
 }
 
 fn render_compact_table_row(record: &SchulzeRecord) -> Markup {
-    let perf = format_perf_combined(record);
+    let perf = format_perf_score(
+        record.perf_score,
+        record.benchmark_score,
+        record.techempower_score,
+    );
     html! {
         tr {
             td class="num" { (record.position) }
@@ -446,43 +457,6 @@ fn relative_link(html_path: &Path, target: &Path) -> Option<String> {
     } else {
         None
     }
-}
-
-fn format_optional_rank(rank: Option<u32>) -> String {
-    rank.map_or_else(|| "-".to_string(), |value| value.to_string())
-}
-
-fn format_optional_float(value: Option<f64>) -> String {
-    match value {
-        Some(v) if v.is_finite() => format!("{v:.2}"),
-        _ => "-".to_string(),
-    }
-}
-
-fn format_perf_combined(record: &SchulzeRecord) -> String {
-    if record.benchmark_score.is_none() && record.techempower_score.is_none() {
-        "-".to_string()
-    } else {
-        format!("{:.2}", record.perf_score)
-    }
-}
-
-fn format_trend_html(trend: Option<f64>) -> (String, &'static str) {
-    trend.map_or_else(
-        || ("-".to_string(), "neutral"),
-        |value| {
-            let normalized = if value.abs() < 0.005 { 0.0 } else { value };
-            let label = format!("{normalized:+.2}");
-            let class = if normalized > 0.0 {
-                "up"
-            } else if normalized < 0.0 {
-                "down"
-            } else {
-                "neutral"
-            };
-            (label, class)
-        },
-    )
 }
 
 const GITHUB_REPO_URL: &str = "https://github.com/hexqnt/langrank";

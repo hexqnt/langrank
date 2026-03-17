@@ -424,11 +424,11 @@ fn as_f64(v: &Value) -> f64 {
     v.as_f64()
         .or_else(|| {
             v.as_i64()
-                .and_then(|value| u32::try_from(value).ok().map(f64::from))
+                .and_then(|value| value.to_string().parse::<f64>().ok())
         })
         .or_else(|| {
             v.as_u64()
-                .and_then(|value| u32::try_from(value).ok().map(f64::from))
+                .and_then(|value| value.to_string().parse::<f64>().ok())
         })
         .unwrap_or(0.0)
 }
@@ -441,17 +441,40 @@ fn mean_percent(m: &MetricsRaw, sum: &MetricsRaw, w: CoreWeights, total_w: f64) 
     let mut weighted_sum = 0.0;
 
     if w.issues > 0.0 && sum.issues > 0.0 && m.issues > 0.0 {
-        weighted_sum += w.issues * (m.issues / sum.issues);
+        weighted_sum = (m.issues / sum.issues).mul_add(w.issues, weighted_sum);
     }
     if w.pulls > 0.0 && sum.pulls > 0.0 && m.pulls > 0.0 {
-        weighted_sum += w.pulls * (m.pulls / sum.pulls);
+        weighted_sum = (m.pulls / sum.pulls).mul_add(w.pulls, weighted_sum);
     }
     if w.so_questions > 0.0 && sum.so_questions > 0.0 && m.so_questions > 0.0 {
-        weighted_sum += w.so_questions * (m.so_questions / sum.so_questions);
+        weighted_sum = (m.so_questions / sum.so_questions).mul_add(w.so_questions, weighted_sum);
     }
     if w.stars > 0.0 && sum.stars > 0.0 && m.stars > 0.0 {
-        weighted_sum += w.stars * (m.stars / sum.stars);
+        weighted_sum = (m.stars / sum.stars).mul_add(w.stars, weighted_sum);
     }
 
     weighted_sum * (100.0 / total_w)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{as_f64, decode_js_string_literal, extract_json_parse_payload};
+    use serde_json::Value;
+
+    #[test]
+    fn as_f64_supports_large_unsigned_values() {
+        let raw = Value::from(u64::MAX);
+        let converted = as_f64(&raw);
+        assert!(converted.is_finite());
+        assert!(converted > 1.0e18);
+    }
+
+    #[test]
+    fn extracts_and_decodes_embedded_json_payload() {
+        let js = r#"const payload = JSON.parse('{\\"items\\":{\\"keys\\":[] ,\\"rows\\":[]},\\"sums\\":{\\"keys\\":[],\\"rows\\":[]}}');"#;
+        let encoded = extract_json_parse_payload(js).expect("payload should be extracted");
+        let decoded = decode_js_string_literal(&encoded).expect("payload should decode");
+        assert!(decoded.contains("items"));
+        assert!(decoded.contains("sums"));
+    }
 }

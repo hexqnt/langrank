@@ -4,7 +4,7 @@ use rustc_hash::FxHashMap;
 use std::io::Cursor;
 use tokio::task;
 
-use super::{canonicalize_language, fetch_bytes_with_retry};
+use super::{CanonicalLanguage, fetch_bytes_with_retry};
 
 const BENCH_URL: &str = "https://salsa.debian.org/benchmarksgame-team/benchmarksgame/-/raw/master/public/data/alldata.csv";
 
@@ -73,11 +73,11 @@ fn compute_benchmark_scores_sync(data: &[u8]) -> Result<FxHashMap<String, f64>> 
             _ => continue,
         };
 
-        let Some(canonical) = canonicalize_language(lang_raw) else {
+        let Some(canonical) = CanonicalLanguage::parse(lang_raw) else {
             continue;
         };
-        let task = name.to_string();
-        let key = (canonical.clone(), task.clone());
+        let task = name.to_owned();
+        let key = (canonical.into_string(), task.clone());
         let entry = best_per_lang_task.entry(key).or_insert(f64::INFINITY);
         if elapsed < *entry {
             *entry = elapsed;

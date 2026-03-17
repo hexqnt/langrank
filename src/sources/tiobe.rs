@@ -70,8 +70,11 @@ pub async fn fetch_tiobe(client: &Client) -> Result<Vec<RankingEntry>> {
     let body = fetch_text_with_retry(client, TIOBE_URL)
         .await
         .context("failed to download TIOBE index")?;
-    let document = Html::parse_document(&body);
+    Ok(parse_tiobe_html(body.as_str()))
+}
 
+fn parse_tiobe_html(body: &str) -> Vec<RankingEntry> {
+    let document = Html::parse_document(body);
     let mut entries = Vec::new();
 
     if let Some(table) = document.select(main_table_selector()).next() {
@@ -92,7 +95,7 @@ pub async fn fetch_tiobe(client: &Client) -> Result<Vec<RankingEntry>> {
         }
     }
 
-    Ok(aggregate_entries(entries))
+    aggregate_entries(entries)
 }
 
 fn main_table_selector() -> &'static Selector {
@@ -118,4 +121,35 @@ fn row_selector() -> &'static Selector {
 fn cell_selector() -> &'static Selector {
     static SELECTOR: OnceLock<Selector> = OnceLock::new();
     SELECTOR.get_or_init(|| Selector::parse("td").expect("TIOBE cell selector is valid"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_tiobe_html;
+
+    #[test]
+    fn parses_main_and_other_tables() {
+        let html = r#"
+            <html>
+              <table class="table table-striped table-top20">
+                <tr><th>header</th></tr>
+                <tr>
+                  <td>1</td><td>x</td><td>x</td><td>x</td>
+                  <td>Rust</td><td>10.2%</td><td>+0.6%</td>
+                </tr>
+              </table>
+              <table id="otherPL">
+                <tr><th>header</th></tr>
+                <tr>
+                  <td>24</td><td>Go</td><td>3.1%</td>
+                </tr>
+              </table>
+            </html>
+        "#;
+
+        let entries = parse_tiobe_html(html);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].lang, "Go");
+        assert_eq!(entries[1].lang, "Rust");
+    }
 }
