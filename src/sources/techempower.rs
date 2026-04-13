@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use reqwest::{Client, Url};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use scraper::{Html, Selector};
 use serde::Deserialize;
 use serde_json::Value;
@@ -8,16 +8,16 @@ use std::path::Path;
 
 use super::{CanonicalLanguage, fetch_bytes_with_retry, fetch_text_with_retry};
 
-const TFB_STATUS_URL: &str = "https://tfb-status.techempower.com";
 const TFB_BENCHMARKS_URL: &str = "https://www.techempower.com/benchmarks/";
 const TEST_WEIGHTS: [f64; 6] = [1.0, 0.75, 0.75, 0.75, 1.5, 1.25];
 const TEST_NAMES: [&str; 6] = ["json", "plaintext", "db", "query", "fortune", "update"];
 pub const TECHEMPOWER_MAX_SCORE: f64 = 6.0;
 const MAX_FALLBACK_RESULTS_URLS: usize = 8;
+const MIN_SUPPORTED_ROUND: u16 = 21;
 const STATIC_FALLBACK_RESULTS_URLS: [&str; 3] = [
-    "https://tfb-status.techempower.com/unzip/results.2025-02-05-22-40-37-331.zip/results/20250130184741/results.json",
-    "https://tfb-status.techempower.com/unzip/results.2023-10-17-15-51-42-846.zip/results/20231011080047/results.json",
-    "https://tfb-status.techempower.com/unzip/results.2022-07-06-02-28-46-055.zip/results/20220630150650/results.json",
+    "https://www.techempower.com/benchmarks/results/round23/ph.json",
+    "https://www.techempower.com/benchmarks/results/round22/ph.json",
+    "https://www.techempower.com/benchmarks/results/round21/ph.json",
 ];
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -41,35 +41,24 @@ struct TfbTestMetadata {
 }
 
 pub async fn fetch_techempower(client: &Client) -> Result<FxHashMap<String, f64>> {
-    match fetch_techempower_via_status(client).await {
-        Ok(scores) => Ok(scores),
-        Err(primary_err) => {
-            let fallback_urls = fallback_results_urls(client).await;
-            let mut fallback_errors: Vec<String> = Vec::new();
+    let fallback_urls = fallback_results_urls(client).await;
+    let mut errors: Vec<String> = Vec::new();
 
-            for results_url in fallback_urls {
-                match fetch_techempower_for_results_url(client, &results_url).await {
-                    Ok(scores) => return Ok(scores),
-                    Err(err) => fallback_errors.push(format!("{results_url}: {err:#}")),
-                }
-            }
-
-            let fallback_summary = if fallback_errors.is_empty() {
-                "no fallback snapshot URLs were available".to_string()
-            } else {
-                fallback_errors.join(" | ")
-            };
-            Err(anyhow!(
-                "failed to fetch TechEmpower data from status page and fallback snapshots; status error: {primary_err:#}; fallback errors: {fallback_summary}"
-            ))
+    for results_url in fallback_urls {
+        match fetch_techempower_for_results_url(client, &results_url).await {
+            Ok(scores) => return Ok(scores),
+            Err(err) => errors.push(format!("{results_url}: {err:#}")),
         }
     }
-}
 
-async fn fetch_techempower_via_status(client: &Client) -> Result<FxHashMap<String, f64>> {
-    let run_id = latest_completed_run_id(client).await?;
-    let results_url = results_url_for_run(client, &run_id).await?;
-    fetch_techempower_for_results_url(client, &results_url).await
+    let summary = if errors.is_empty() {
+        "no fallback URLs were available".to_string()
+    } else {
+        errors.join(" | ")
+    };
+    Err(anyhow!(
+        "failed to fetch TechEmpower data from benchmarks results sources; errors: {summary}"
+    ))
 }
 
 async fn fetch_techempower_for_results_url(
@@ -83,53 +72,6 @@ async fn fetch_techempower_for_results_url(
         serde_json::from_slice(&bytes).context("failed to parse TechEmpower results JSON")?;
     let scores = compute_language_scores(&results)?;
     Ok(scores)
-}
-
-async fn latest_completed_run_id(client: &Client) -> Result<String> {
-    let status_html = fetch_text_with_retry(client, TFB_STATUS_URL)
-        .await
-        .context("failed to fetch TechEmpower status page")?;
-    let document = Html::parse_document(&status_html);
-    let row_selector = Selector::parse("tr[data-uuid]")
-        .map_err(|_| anyhow!("invalid selector for TechEmpower status rows"))?;
-
-    for row in document.select(&row_selector) {
-        let run_id = row.value().attr("data-uuid").unwrap_or("").trim();
-        if run_id.is_empty() {
-            continue;
-        }
-        if is_completed_status(row.text()) {
-            return Ok(run_id.to_string());
-        }
-    }
-
-    Err(anyhow!("no completed TechEmpower runs found"))
-}
-
-async fn results_url_for_run(client: &Client, run_id: &str) -> Result<String> {
-    let details_url = format!("{TFB_STATUS_URL}/results/{run_id}");
-    let details_html = fetch_text_with_retry(client, &details_url)
-        .await
-        .with_context(|| format!("failed to fetch TechEmpower run page {details_url}"))?;
-    let document = Html::parse_document(&details_html);
-    let link_selector =
-        Selector::parse("a").map_err(|_| anyhow!("invalid selector for TechEmpower run links"))?;
-    for link in document.select(&link_selector) {
-        let text = link.text().collect::<Vec<_>>().join(" ");
-        if text.trim() == "results.json" {
-            let href = link
-                .value()
-                .attr("href")
-                .ok_or_else(|| anyhow!("missing href for results.json link"))?;
-            return Ok(resolve_techempower_url(href));
-        }
-    }
-
-    Err(anyhow!("results.json link not found for run {run_id}"))
-}
-
-fn resolve_techempower_url(href: &str) -> String {
-    resolve_url(TFB_STATUS_URL, href)
 }
 
 fn resolve_url(base_url: &str, href: &str) -> String {
@@ -157,9 +99,7 @@ async fn fallback_results_urls(client: &Client) -> Vec<String> {
         urls.push(url.to_string());
     }
 
-    urls.sort_unstable();
-    urls.dedup();
-    urls.reverse();
+    urls = dedup_urls_preserve_order(urls);
     urls.truncate(MAX_FALLBACK_RESULTS_URLS);
     urls
 }
@@ -173,10 +113,10 @@ async fn discover_fallback_results_urls(client: &Client) -> Result<Vec<String>> 
     let bundle = fetch_text_with_retry(client, &bundle_url)
         .await
         .with_context(|| format!("failed to fetch TechEmpower benchmarks bundle {bundle_url}"))?;
-    let urls = extract_snapshot_results_urls(&bundle);
+    let urls = extract_round_results_urls(&bundle);
     if urls.is_empty() {
         return Err(anyhow!(
-            "no fallback snapshot URLs found in TechEmpower benchmarks bundle"
+            "no fallback URLs found in TechEmpower benchmarks bundle"
         ));
     }
     Ok(urls)
@@ -198,52 +138,45 @@ fn benchmarks_bundle_url(html: &str) -> Option<String> {
     None
 }
 
-fn extract_snapshot_results_urls(bundle: &str) -> Vec<String> {
-    const URL_PREFIX: &str = "https://tfb-status.techempower.com/unzip/results.";
-    let mut urls: Vec<String> = Vec::new();
+fn extract_round_results_urls(bundle: &str) -> Vec<String> {
+    const ROUND_MARKER: &str = "data-r";
+    let mut rounds: Vec<u16> = Vec::new();
     let mut rest = bundle;
 
-    while let Some(start) = rest.find(URL_PREFIX) {
-        rest = &rest[start..];
+    while let Some(start) = rest.find(ROUND_MARKER) {
+        rest = &rest[start + ROUND_MARKER.len()..];
         let end = rest
-            .find(|ch: char| matches!(ch, '"' | '\'' | '\\') || ch.is_ascii_whitespace())
+            .find(|ch: char| !ch.is_ascii_digit())
             .unwrap_or(rest.len());
-        let raw = &rest[..end];
-        if raw.contains("/results/") {
-            let url = if raw.ends_with("/results.json") {
-                raw.to_string()
-            } else if raw.ends_with('/') {
-                format!("{raw}results.json")
-            } else {
-                format!("{raw}/results.json")
-            };
-            urls.push(url);
+        if end == 0 {
+            continue;
+        }
+        let digits = &rest[..end];
+        if let Ok(round) = digits.parse::<u16>() {
+            rounds.push(round);
         }
         rest = &rest[end..];
     }
 
-    urls.sort_unstable();
-    urls.dedup();
-    urls.reverse();
-    urls
+    rounds.sort_unstable();
+    rounds.dedup();
+    rounds.reverse();
+    rounds
+        .into_iter()
+        .filter(|round| *round >= MIN_SUPPORTED_ROUND)
+        .map(|round| format!("{TFB_BENCHMARKS_URL}results/round{round}/ph.json"))
+        .collect()
 }
 
-fn is_completed_status<'a>(text_chunks: impl Iterator<Item = &'a str>) -> bool {
-    let mut previous_was_not = false;
-    for token in text_chunks
-        .flat_map(|chunk| chunk.split(|ch: char| !ch.is_ascii_alphanumeric()))
-        .filter(|token| !token.is_empty())
-    {
-        if token.eq_ignore_ascii_case("completed") {
-            if previous_was_not {
-                previous_was_not = false;
-                continue;
-            }
-            return true;
+fn dedup_urls_preserve_order(urls: Vec<String>) -> Vec<String> {
+    let mut seen: FxHashSet<String> = FxHashSet::default();
+    let mut unique: Vec<String> = Vec::new();
+    for url in urls {
+        if seen.insert(url.clone()) {
+            unique.push(url);
         }
-        previous_was_not = token.eq_ignore_ascii_case("not");
     }
-    false
+    unique
 }
 
 fn compute_language_scores(results: &TechempowerResults) -> Result<FxHashMap<String, f64>> {
@@ -357,21 +290,43 @@ fn calculate_rps_value(run: &Value) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_snapshot_results_urls;
+    use super::{dedup_urls_preserve_order, extract_round_results_urls};
 
     #[test]
-    fn extracts_and_normalizes_snapshot_urls() {
+    fn extracts_round_ph_urls() {
         let bundle = r#"
-            const a = "https://tfb-status.techempower.com/unzip/results.2025-02-05-22-40-37-331.zip/results/20250130184741";
-            const b = "https://tfb-status.techempower.com/unzip/results.2023-10-17-15-51-42-846.zip/results/20231011080047/results.json";
-            const c = "https://tfb-status.techempower.com/unzip/results.2025-02-05-22-40-37-331.zip/results/20250130184741";
+            const tabs = [
+                { tab: "data-r18" },
+                { tab: "data-r23" },
+                { tab: "data-r22" },
+                { tab: "data-r21" },
+                { tab: "data-r23" },
+            ];
         "#;
-        let urls = extract_snapshot_results_urls(bundle);
+        let urls = extract_round_results_urls(bundle);
         assert_eq!(
             urls,
             vec![
-                "https://tfb-status.techempower.com/unzip/results.2025-02-05-22-40-37-331.zip/results/20250130184741/results.json",
-                "https://tfb-status.techempower.com/unzip/results.2023-10-17-15-51-42-846.zip/results/20231011080047/results.json",
+                "https://www.techempower.com/benchmarks/results/round23/ph.json",
+                "https://www.techempower.com/benchmarks/results/round22/ph.json",
+                "https://www.techempower.com/benchmarks/results/round21/ph.json",
+            ]
+        );
+    }
+
+    #[test]
+    fn dedups_urls_without_reordering() {
+        let urls = vec![
+            "https://www.techempower.com/benchmarks/results/round23/ph.json".to_string(),
+            "https://www.techempower.com/benchmarks/results/round22/ph.json".to_string(),
+            "https://www.techempower.com/benchmarks/results/round23/ph.json".to_string(),
+        ];
+        let unique = dedup_urls_preserve_order(urls);
+        assert_eq!(
+            unique,
+            vec![
+                "https://www.techempower.com/benchmarks/results/round23/ph.json",
+                "https://www.techempower.com/benchmarks/results/round22/ph.json",
             ]
         );
     }

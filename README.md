@@ -97,7 +97,8 @@ $\mathrm{lang\_time}_t$ — время языка на этой задаче, $N
 
 TechEmpower (TE) считается так:
 
-1. Берём последний completed run с `tfb-status.techempower.com`.
+1. Берём последний доступный официальный round `roundN/ph.json` (для поддерживаемых раундов `N >= 21`) со страницы
+   `https://www.techempower.com/benchmarks/results/` (round определяется из JS-бандла страницы benchmarks).
 2. Для каждого фреймворка считаем пропускную способность (RPS) по каждому тесту:
    JSON, Plaintext, Single Query (db), Multi Query (query), Fortunes (fortune), Updates (update).
 3. Нормализуем RPS по каждому тесту, деля на максимальный RPS среди всех фреймворков в этом тесте.
@@ -156,6 +157,7 @@ cargo run -- completions fish
 - 🟢 Languish (Programming Language Trends) — <https://tjpalmer.github.io/languish/>
 - 🟥 Benchmarks Game — <https://salsa.debian.org/benchmarksgame-team/benchmarksgame/-/raw/master/public/data/alldata.csv>
 - 🟣 TechEmpower Framework Benchmarks — <https://www.techempower.com/benchmarks/>
+  и `https://www.techempower.com/benchmarks/results/round21+/ph.json`
 
 ## 🧱 Статическая сборка
 
