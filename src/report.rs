@@ -720,7 +720,6 @@ h1 {
 
 .table-wrap {
   border-radius: 20px;
-  overflow: auto;
   border: 1px solid var(--border);
   background: var(--card);
   box-shadow: var(--shadow);
@@ -729,10 +728,6 @@ h1 {
   --sticky-col-2-left: 64px;
 }
 
-
-.table-wrap.table-full {
-  max-height: 70vh;
-}
 
 .table-wrap.table-compact {
   --table-min-width: 720px;

@@ -39,97 +39,45 @@ pub fn compute_schulze_records(
     techempower: &FxHashMap<String, f64>,
     config: SchulzeConfig,
 ) -> Result<Vec<SchulzeRecord>> {
-    let tiobe_index = build_ranking_index(tiobe);
-    let pypl_index = build_ranking_index(pypl);
-    let languish_index = build_ranking_index(languish);
-    let sources = RankingSources {
-        tiobe: RankingSource {
-            entries: tiobe,
-            index: &tiobe_index,
-        },
-        pypl: RankingSource {
-            entries: pypl,
-            index: &pypl_index,
-        },
-        languish: RankingSource {
-            entries: languish,
-            index: &languish_index,
-        },
-        benchmark,
-        techempower,
-        techempower_max_score: config.techempower_max_score,
-    };
-    let languages = collect_languages(
-        tiobe,
-        pypl,
-        languish,
-        benchmark,
-        techempower,
-        config.min_source_overlap,
-    );
-    let languages = limit_languages(languages, &sources, config.max_ranked_languages);
-    if languages.len() < 2 {
+    let sources = RankingSources::new(tiobe, pypl, languish, benchmark, techempower, config);
+    let languages = collect_language_names(&sources, config.min_source_overlap);
+    let candidates = build_candidates(languages, &sources);
+    let candidates = limit_candidates(candidates, config.max_ranked_languages);
+
+    if candidates.len() < 2 {
         return Err(anyhow!(
             "Not enough overlapping languages ({}) to compute Schulze ranking",
-            languages.len()
+            candidates.len()
         ));
     }
-    let ballots = build_ballots(&languages, &sources);
-    let preference_strengths = build_preference_matrix(languages.len(), &ballots);
-    let index_map = build_language_index(&languages);
-    let ranked_indices = rank_languages(&languages, &preference_strengths, &index_map, &sources);
 
-    let mut records = Vec::with_capacity(languages.len());
-    for (position, &idx) in ranked_indices.iter().enumerate() {
-        let lang = languages[idx].as_str();
-        let wins = (0..languages.len())
-            .filter(|&other| {
-                other != idx
-                    && preference_strengths[[idx, other]] > preference_strengths[[other, idx]]
-            })
-            .count();
+    let ballots = build_ballots(&candidates);
+    let preference_strengths = build_preference_matrix(candidates.len(), &ballots);
+    let ranked_indices = rank_languages(&candidates, &preference_strengths);
 
-        let tiobe_entry = sources.tiobe.entry(lang);
-        let pypl_entry = sources.pypl.entry(lang);
-        let languish_entry = sources.languish.entry(lang);
-        let bench_value = sources.benchmark_value(lang);
-        let techempower_score = sources.techempower_value(lang);
-        let perf_score = sources.perf_score(lang);
-
-        records.push(SchulzeRecord {
-            position: position + 1,
-            lang: lang.to_owned(),
-            tiobe_rank: tiobe_entry.and_then(|entry| entry.rank),
-            tiobe_share: tiobe_entry.map_or(0.0, |entry| entry.share),
-            tiobe_trend: tiobe_entry.and_then(|entry| entry.trend),
-            pypl_rank: pypl_entry.and_then(|entry| entry.rank),
-            pypl_share: pypl_entry.map_or(0.0, |entry| entry.share),
-            pypl_trend: pypl_entry.and_then(|entry| entry.trend),
-            languish_rank: languish_entry.and_then(|entry| entry.rank),
-            languish_share: languish_entry.map_or(0.0, |entry| entry.share),
-            languish_trend: languish_entry.and_then(|entry| entry.trend),
-            benchmark_score: bench_value,
-            techempower_score,
-            perf_score,
-            schulze_wins: wins,
-        });
-    }
-
-    Ok(records)
+    Ok(build_records(
+        &candidates,
+        &ranked_indices,
+        &preference_strengths,
+    ))
 }
 
 struct RankingSource<'a> {
     entries: &'a [RankingEntry],
-    index: &'a FxHashMap<&'a str, usize>,
+    index: FxHashMap<&'a str, usize>,
 }
 
 impl<'a> RankingSource<'a> {
-    fn entry(&self, lang: &str) -> Option<&'a RankingEntry> {
-        self.index.get(lang).and_then(|&idx| self.entries.get(idx))
+    fn new(entries: &'a [RankingEntry]) -> Self {
+        Self {
+            entries,
+            index: build_ranking_index(entries),
+        }
     }
 
-    fn share(&self, lang: &str) -> f64 {
-        self.entry(lang).map_or(0.0, |entry| entry.share)
+    fn entry(&self, lang: &str) -> Option<&'a RankingEntry> {
+        let &idx = self.index.get(lang)?;
+        self.entries.get(idx)
     }
 }
 
@@ -142,7 +90,25 @@ struct RankingSources<'a> {
     techempower_max_score: f64,
 }
 
-impl RankingSources<'_> {
+impl<'a> RankingSources<'a> {
+    fn new(
+        tiobe: &'a [RankingEntry],
+        pypl: &'a [RankingEntry],
+        languish: &'a [RankingEntry],
+        benchmark: &'a FxHashMap<String, f64>,
+        techempower: &'a FxHashMap<String, f64>,
+        config: SchulzeConfig,
+    ) -> Self {
+        Self {
+            tiobe: RankingSource::new(tiobe),
+            pypl: RankingSource::new(pypl),
+            languish: RankingSource::new(languish),
+            benchmark,
+            techempower,
+            techempower_max_score: config.techempower_max_score,
+        }
+    }
+
     fn benchmark_value(&self, lang: &str) -> Option<f64> {
         self.benchmark.get(lang).copied()
     }
@@ -150,16 +116,76 @@ impl RankingSources<'_> {
     fn techempower_value(&self, lang: &str) -> Option<f64> {
         self.techempower.get(lang).copied()
     }
+}
 
-    fn perf_score(&self, lang: &str) -> f64 {
-        let bg = self.benchmark_value(lang).unwrap_or(0.0);
-        let te_raw = self.techempower_value(lang).unwrap_or(0.0);
-        let te_norm = if self.techempower_max_score > 0.0 {
-            te_raw / self.techempower_max_score
-        } else {
-            0.0
-        };
-        f64::midpoint(bg, te_norm)
+struct LanguageCandidate<'a> {
+    name: String,
+    tiobe: Option<&'a RankingEntry>,
+    pypl: Option<&'a RankingEntry>,
+    languish: Option<&'a RankingEntry>,
+    benchmark_score: Option<f64>,
+    techempower_score: Option<f64>,
+    source_count: usize,
+    popularity_score: f64,
+    perf_score: f64,
+    combined_score: f64,
+}
+
+impl<'a> LanguageCandidate<'a> {
+    fn new(name: String, sources: &RankingSources<'a>) -> Self {
+        let lang = name.as_str();
+        let tiobe = sources.tiobe.entry(lang);
+        let pypl = sources.pypl.entry(lang);
+        let languish = sources.languish.entry(lang);
+        let benchmark_score = sources.benchmark_value(lang);
+        let techempower_score = sources.techempower_value(lang);
+        let perf_score = performance_score(
+            benchmark_score,
+            techempower_score,
+            sources.techempower_max_score,
+        );
+        let popularity_score = source_share(tiobe) + source_share(pypl) + source_share(languish);
+        let source_count = usize::from(tiobe.is_some())
+            + usize::from(pypl.is_some())
+            + usize::from(languish.is_some())
+            + usize::from(benchmark_score.is_some() || techempower_score.is_some());
+
+        Self {
+            name,
+            tiobe,
+            pypl,
+            languish,
+            benchmark_score,
+            techempower_score,
+            source_count,
+            popularity_score,
+            perf_score,
+            combined_score: popularity_score + perf_score,
+        }
+    }
+
+    const fn lang(&self) -> &str {
+        self.name.as_str()
+    }
+
+    fn record(&self, position: usize, schulze_wins: usize) -> SchulzeRecord {
+        SchulzeRecord {
+            position,
+            lang: self.name.clone(),
+            tiobe_rank: self.tiobe.and_then(|entry| entry.rank),
+            tiobe_share: source_share(self.tiobe),
+            tiobe_trend: self.tiobe.and_then(|entry| entry.trend),
+            pypl_rank: self.pypl.and_then(|entry| entry.rank),
+            pypl_share: source_share(self.pypl),
+            pypl_trend: self.pypl.and_then(|entry| entry.trend),
+            languish_rank: self.languish.and_then(|entry| entry.rank),
+            languish_share: source_share(self.languish),
+            languish_trend: self.languish.and_then(|entry| entry.trend),
+            benchmark_score: self.benchmark_score,
+            techempower_score: self.techempower_score,
+            perf_score: self.perf_score,
+            schulze_wins,
+        }
     }
 }
 
@@ -171,35 +197,31 @@ fn build_ranking_index(entries: &[RankingEntry]) -> FxHashMap<&str, usize> {
         .collect()
 }
 
-fn collect_languages<'a>(
-    tiobe: &'a [RankingEntry],
-    pypl: &'a [RankingEntry],
-    languish: &'a [RankingEntry],
-    benchmark: &'a FxHashMap<String, f64>,
-    techempower: &'a FxHashMap<String, f64>,
-    min_sources: usize,
-) -> Vec<String> {
-    let mut counts: FxHashMap<&str, usize> = FxHashMap::default();
-    for entry in tiobe {
-        *counts.entry(entry.lang.as_str()).or_insert(0) += 1;
-    }
-    for entry in pypl {
-        *counts.entry(entry.lang.as_str()).or_insert(0) += 1;
-    }
-    for entry in languish {
-        *counts.entry(entry.lang.as_str()).or_insert(0) += 1;
-    }
+fn source_share(entry: Option<&RankingEntry>) -> f64 {
+    entry.map_or(0.0, |entry| entry.share)
+}
 
-    let mut perf_langs: FxHashSet<&str> = FxHashSet::default();
-    for lang in benchmark.keys() {
-        perf_langs.insert(lang.as_str());
-    }
-    for lang in techempower.keys() {
-        perf_langs.insert(lang.as_str());
-    }
-    for lang in perf_langs {
-        *counts.entry(lang).or_insert(0) += 1;
-    }
+fn performance_score(
+    benchmark_score: Option<f64>,
+    techempower_score: Option<f64>,
+    techempower_max_score: f64,
+) -> f64 {
+    let benchmark = benchmark_score.unwrap_or(0.0);
+    let techempower = techempower_score.unwrap_or(0.0);
+    let normalized_techempower = if techempower_max_score > 0.0 {
+        techempower / techempower_max_score
+    } else {
+        0.0
+    };
+    f64::midpoint(benchmark, normalized_techempower)
+}
+
+fn collect_language_names(sources: &RankingSources<'_>, min_sources: usize) -> Vec<String> {
+    let mut counts: FxHashMap<&str, usize> = FxHashMap::default();
+    add_ranking_source(&mut counts, sources.tiobe.entries);
+    add_ranking_source(&mut counts, sources.pypl.entries);
+    add_ranking_source(&mut counts, sources.languish.entries);
+    add_performance_source(&mut counts, sources.benchmark, sources.techempower);
 
     let mut languages: Vec<String> = counts
         .into_iter()
@@ -210,183 +232,194 @@ fn collect_languages<'a>(
     languages
 }
 
-fn limit_languages(
+fn add_ranking_source<'a>(counts: &mut FxHashMap<&'a str, usize>, entries: &'a [RankingEntry]) {
+    let mut seen = FxHashSet::default();
+    for entry in entries {
+        let lang = entry.lang.as_str();
+        if seen.insert(lang) {
+            *counts.entry(lang).or_insert(0) += 1;
+        }
+    }
+}
+
+fn add_performance_source<'a>(
+    counts: &mut FxHashMap<&'a str, usize>,
+    benchmark: &'a FxHashMap<String, f64>,
+    techempower: &'a FxHashMap<String, f64>,
+) {
+    let mut seen = FxHashSet::default();
+    for lang in benchmark.keys().chain(techempower.keys()) {
+        seen.insert(lang.as_str());
+    }
+    for lang in seen {
+        *counts.entry(lang).or_insert(0) += 1;
+    }
+}
+
+fn build_candidates<'a>(
     languages: Vec<String>,
-    sources: &RankingSources<'_>,
+    sources: &RankingSources<'a>,
+) -> Vec<LanguageCandidate<'a>> {
+    languages
+        .into_iter()
+        .map(|lang| LanguageCandidate::new(lang, sources))
+        .collect()
+}
+
+fn limit_candidates(
+    mut candidates: Vec<LanguageCandidate<'_>>,
     max_languages: usize,
-) -> Vec<String> {
-    if max_languages == 0 || languages.len() <= max_languages {
-        return languages;
+) -> Vec<LanguageCandidate<'_>> {
+    if max_languages == 0 || candidates.len() <= max_languages {
+        return candidates;
     }
 
-    let mut scored: Vec<(usize, f64, f64, String)> = Vec::with_capacity(languages.len());
-    for lang in languages {
-        let lang_ref = lang.as_str();
-        let source_count = count_sources(lang_ref, sources);
-        let popularity_score = sources.tiobe.share(lang_ref)
-            + sources.pypl.share(lang_ref)
-            + sources.languish.share(lang_ref);
-        let perf_component = sources.perf_score(lang_ref);
-        scored.push((source_count, popularity_score, perf_component, lang));
-    }
-
-    let cmp_scores =
-        |(count_a, pop_a, perf_a, lang_a): &(usize, f64, f64, String),
-         (count_b, pop_b, perf_b, lang_b): &(usize, f64, f64, String)| {
-            count_b
-                .cmp(count_a)
-                .then_with(|| pop_b.total_cmp(pop_a))
-                .then_with(|| perf_b.total_cmp(perf_a))
-                .then_with(|| lang_a.cmp(lang_b))
-        };
-    let nth = max_languages.saturating_sub(1);
-    scored.select_nth_unstable_by(nth, cmp_scores);
-    scored.truncate(max_languages);
-
-    let mut limited: Vec<String> = scored.into_iter().map(|(_, _, _, lang)| lang).collect();
-    limited.sort_unstable();
-    limited
+    candidates.select_nth_unstable_by(max_languages - 1, compare_candidate_scores);
+    candidates.truncate(max_languages);
+    candidates.sort_unstable_by(|left, right| left.lang().cmp(right.lang()));
+    candidates
 }
 
-fn count_sources(lang: &str, sources: &RankingSources<'_>) -> usize {
-    let mut count = 0;
-    if sources.tiobe.entry(lang).is_some() {
-        count += 1;
-    }
-    if sources.pypl.entry(lang).is_some() {
-        count += 1;
-    }
-    if sources.languish.entry(lang).is_some() {
-        count += 1;
-    }
-    if sources.benchmark.contains_key(lang) || sources.techempower.contains_key(lang) {
-        count += 1;
-    }
-    count
+fn compare_candidate_scores(
+    left: &LanguageCandidate<'_>,
+    right: &LanguageCandidate<'_>,
+) -> Ordering {
+    right
+        .source_count
+        .cmp(&left.source_count)
+        .then_with(|| right.popularity_score.total_cmp(&left.popularity_score))
+        .then_with(|| right.perf_score.total_cmp(&left.perf_score))
+        .then_with(|| left.lang().cmp(right.lang()))
 }
 
-fn build_ballots(languages: &[String], sources: &RankingSources<'_>) -> Vec<Vec<usize>> {
-    let tiobe_order = order_by_metric(languages, |lang| sources.tiobe.share(lang), false);
-    let pypl_order = order_by_metric(languages, |lang| sources.pypl.share(lang), false);
-    let languish_order = order_by_metric(languages, |lang| sources.languish.share(lang), false);
-    let performance_order = order_by_metric(languages, |lang| sources.perf_score(lang), false);
+const SOURCE_BALLOT_COUNT: usize = 4;
 
-    vec![tiobe_order, pypl_order, languish_order, performance_order]
+type Ballots = [Vec<usize>; SOURCE_BALLOT_COUNT];
+
+fn build_ballots(candidates: &[LanguageCandidate<'_>]) -> Ballots {
+    [
+        order_by_metric(candidates, |candidate| source_share(candidate.tiobe)),
+        order_by_metric(candidates, |candidate| source_share(candidate.pypl)),
+        order_by_metric(candidates, |candidate| source_share(candidate.languish)),
+        order_by_metric(candidates, |candidate| candidate.perf_score),
+    ]
 }
 
-fn order_by_metric<F>(languages: &[String], metric: F, ascending: bool) -> Vec<usize>
+fn order_by_metric<F>(candidates: &[LanguageCandidate<'_>], metric: F) -> Vec<usize>
 where
-    F: Fn(&str) -> f64,
+    F: Fn(&LanguageCandidate<'_>) -> f64,
 {
-    let mut scored: Vec<(usize, f64)> = Vec::with_capacity(languages.len());
-    for (idx, lang) in languages.iter().enumerate() {
-        scored.push((idx, metric(lang.as_str())));
-    }
+    let mut scored: Vec<(usize, f64)> = candidates
+        .iter()
+        .enumerate()
+        .map(|(idx, candidate)| (idx, metric(candidate)))
+        .collect();
+
     scored.sort_by(|(idx_a, score_a), (idx_b, score_b)| {
-        let ord = if ascending {
-            score_a.total_cmp(score_b)
-        } else {
-            score_b.total_cmp(score_a)
-        };
-        ord.then_with(|| languages[*idx_a].cmp(&languages[*idx_b]))
+        score_b
+            .total_cmp(score_a)
+            .then_with(|| candidates[*idx_a].lang().cmp(candidates[*idx_b].lang()))
     });
     scored.into_iter().map(|(idx, _)| idx).collect()
 }
 
-fn build_language_index(languages: &[String]) -> FxHashMap<&str, usize> {
-    languages
-        .iter()
-        .enumerate()
-        .map(|(idx, lang)| (lang.as_str(), idx))
-        .collect()
-}
-
 fn rank_languages(
-    languages: &[String],
+    candidates: &[LanguageCandidate<'_>],
     preference_strengths: &Array2<usize>,
-    index_map: &FxHashMap<&str, usize>,
-    sources: &RankingSources<'_>,
 ) -> Vec<usize> {
-    let combined_scores: Vec<f64> = languages
-        .iter()
-        .map(|lang| combined_score(lang.as_str(), sources))
-        .collect();
-    let mut ranked: Vec<usize> = (0..languages.len()).collect();
-    ranked.sort_by(|&i_a, &i_b| {
-        match preference_strengths[[i_a, i_b]].cmp(&preference_strengths[[i_b, i_a]]) {
+    let mut ranked: Vec<usize> = (0..candidates.len()).collect();
+    ranked.sort_by(|&left, &right| {
+        match preference_strengths[[left, right]].cmp(&preference_strengths[[right, left]]) {
             Ordering::Greater => Ordering::Less,
             Ordering::Less => Ordering::Greater,
-            Ordering::Equal => {
-                let score_a = combined_scores[i_a];
-                let score_b = combined_scores[i_b];
-                match score_b.partial_cmp(&score_a).unwrap_or(Ordering::Equal) {
-                    Ordering::Equal => {
-                        let lang_a = languages[i_a].as_str();
-                        let lang_b = languages[i_b].as_str();
-                        lang_a
-                            .cmp(lang_b)
-                            .then_with(|| index_map[lang_a].cmp(&index_map[lang_b]))
-                    }
-                    other => other,
-                }
-            }
+            Ordering::Equal => candidates[right]
+                .combined_score
+                .total_cmp(&candidates[left].combined_score)
+                .then_with(|| candidates[left].lang().cmp(candidates[right].lang())),
         }
     });
     ranked
 }
 
-fn build_preference_matrix(n: usize, ballots: &[Vec<usize>]) -> Array2<usize> {
-    let mut d = Array2::<usize>::zeros((n, n));
-    for ballot in ballots {
-        let mut positions = vec![0usize; n];
-        for (pos, &idx) in ballot.iter().enumerate() {
-            positions[idx] = pos;
-        }
-        for i in 0..n {
-            for j in 0..n {
-                if i != j && positions[i] < positions[j] {
-                    d[[i, j]] += 1;
-                }
-            }
-        }
-    }
-
-    let mut p = Array2::<usize>::zeros((n, n));
-    Zip::from(&mut p)
-        .and(&d)
-        .and(&d.t())
-        .for_each(|p_cell, &d_ij, &d_ji| {
-            if d_ij > d_ji {
-                *p_cell = d_ij;
-            }
-        });
-
-    for i in 0..n {
-        for j in 0..n {
-            if i == j {
-                continue;
-            }
-            for k in 0..n {
-                if i == k || j == k {
-                    continue;
-                }
-                let candidate = p[[j, i]].min(p[[i, k]]);
-                if candidate > p[[j, k]] {
-                    p[[j, k]] = candidate;
-                }
-            }
-        }
-    }
-
-    p
+fn build_records(
+    candidates: &[LanguageCandidate<'_>],
+    ranked_indices: &[usize],
+    preference_strengths: &Array2<usize>,
+) -> Vec<SchulzeRecord> {
+    ranked_indices
+        .iter()
+        .enumerate()
+        .map(|(position, &idx)| {
+            let wins = schulze_wins(preference_strengths, idx);
+            candidates[idx].record(position + 1, wins)
+        })
+        .collect()
 }
 
-fn combined_score(lang: &str, sources: &RankingSources<'_>) -> f64 {
-    let tiobe_share = sources.tiobe.share(lang);
-    let pypl_share = sources.pypl.share(lang);
-    let languish_share = sources.languish.share(lang);
-    let perf_component = sources.perf_score(lang);
-    tiobe_share + pypl_share + languish_share + perf_component
+fn schulze_wins(preference_strengths: &Array2<usize>, candidate_idx: usize) -> usize {
+    (0..preference_strengths.nrows())
+        .filter(|&other_idx| {
+            other_idx != candidate_idx
+                && preference_strengths[[candidate_idx, other_idx]]
+                    > preference_strengths[[other_idx, candidate_idx]]
+        })
+        .count()
+}
+
+fn build_preference_matrix(candidate_count: usize, ballots: &Ballots) -> Array2<usize> {
+    let direct_preferences = build_direct_preference_matrix(candidate_count, ballots);
+    let strongest_paths = build_initial_strongest_paths(&direct_preferences);
+    compute_strongest_paths(strongest_paths)
+}
+
+fn build_direct_preference_matrix(candidate_count: usize, ballots: &Ballots) -> Array2<usize> {
+    let mut preferences = Array2::<usize>::zeros((candidate_count, candidate_count));
+    for ballot in ballots {
+        for (preferred_pos, &preferred_idx) in ballot.iter().enumerate() {
+            for &weaker_idx in &ballot[preferred_pos + 1..] {
+                preferences[[preferred_idx, weaker_idx]] += 1;
+            }
+        }
+    }
+    preferences
+}
+
+fn build_initial_strongest_paths(direct_preferences: &Array2<usize>) -> Array2<usize> {
+    let mut paths = Array2::<usize>::zeros(direct_preferences.dim());
+    Zip::from(&mut paths)
+        .and(direct_preferences)
+        .and(&direct_preferences.t())
+        .for_each(|path, &left, &right| {
+            if left > right {
+                *path = left;
+            }
+        });
+    paths
+}
+
+fn compute_strongest_paths(mut paths: Array2<usize>) -> Array2<usize> {
+    let candidate_count = paths.nrows();
+    for pivot in 0..candidate_count {
+        for from in 0..candidate_count {
+            if from == pivot {
+                continue;
+            }
+            let path_to_pivot = paths[[from, pivot]];
+            if path_to_pivot == 0 {
+                continue;
+            }
+            for to in 0..candidate_count {
+                if to == pivot || to == from {
+                    continue;
+                }
+                let candidate = path_to_pivot.min(paths[[pivot, to]]);
+                if candidate > paths[[from, to]] {
+                    paths[[from, to]] = candidate;
+                }
+            }
+        }
+    }
+    paths
 }
 
 #[cfg(test)]
@@ -395,78 +428,42 @@ mod tests {
     use crate::RankingEntry;
     use rustc_hash::FxHashMap;
 
+    fn entry(lang: &str, rank: u32, share: f64, trend: f64) -> RankingEntry {
+        RankingEntry {
+            lang: lang.to_owned(),
+            rank: Some(rank),
+            share,
+            trend: Some(trend),
+        }
+    }
+
+    fn performance_scores(scores: &[(&str, f64)]) -> FxHashMap<String, f64> {
+        scores
+            .iter()
+            .map(|&(lang, score)| (lang.to_owned(), score))
+            .collect()
+    }
+
     #[test]
     fn stable_ranking_on_fixed_snapshot() {
         let tiobe = vec![
-            RankingEntry {
-                lang: "Rust".to_string(),
-                rank: Some(1),
-                share: 20.0,
-                trend: Some(0.5),
-            },
-            RankingEntry {
-                lang: "Go".to_string(),
-                rank: Some(2),
-                share: 15.0,
-                trend: Some(0.1),
-            },
-            RankingEntry {
-                lang: "Python".to_string(),
-                rank: Some(3),
-                share: 10.0,
-                trend: Some(-0.1),
-            },
+            entry("Rust", 1, 20.0, 0.5),
+            entry("Go", 2, 15.0, 0.1),
+            entry("Python", 3, 10.0, -0.1),
         ];
         let pypl = vec![
-            RankingEntry {
-                lang: "Rust".to_string(),
-                rank: Some(2),
-                share: 12.0,
-                trend: Some(0.2),
-            },
-            RankingEntry {
-                lang: "Go".to_string(),
-                rank: Some(1),
-                share: 14.0,
-                trend: Some(0.3),
-            },
-            RankingEntry {
-                lang: "Python".to_string(),
-                rank: Some(3),
-                share: 9.0,
-                trend: Some(-0.2),
-            },
+            entry("Rust", 2, 12.0, 0.2),
+            entry("Go", 1, 14.0, 0.3),
+            entry("Python", 3, 9.0, -0.2),
         ];
         let languish = vec![
-            RankingEntry {
-                lang: "Rust".to_string(),
-                rank: Some(1),
-                share: 18.0,
-                trend: Some(0.4),
-            },
-            RankingEntry {
-                lang: "Go".to_string(),
-                rank: Some(3),
-                share: 11.0,
-                trend: Some(0.1),
-            },
-            RankingEntry {
-                lang: "Python".to_string(),
-                rank: Some(2),
-                share: 13.0,
-                trend: Some(0.0),
-            },
+            entry("Rust", 1, 18.0, 0.4),
+            entry("Go", 3, 11.0, 0.1),
+            entry("Python", 2, 13.0, 0.0),
         ];
 
-        let mut benchmark = FxHashMap::default();
-        benchmark.insert("Rust".to_string(), 0.9);
-        benchmark.insert("Go".to_string(), 0.8);
-        benchmark.insert("Python".to_string(), 0.5);
-
-        let mut techempower = FxHashMap::default();
-        techempower.insert("Rust".to_string(), 5.4);
-        techempower.insert("Go".to_string(), 4.8);
-        techempower.insert("Python".to_string(), 3.2);
+        let benchmark = performance_scores(&[("Rust", 0.9), ("Go", 0.8), ("Python", 0.5)]);
+        let techempower = performance_scores(&[("Rust", 5.4), ("Go", 4.8), ("Python", 3.2)]);
 
         let records = compute_schulze_records(
             &tiobe,
@@ -484,5 +481,33 @@ mod tests {
 
         let order: Vec<&str> = records.iter().map(|record| record.lang.as_str()).collect();
         assert_eq!(order, vec!["Rust", "Go", "Python"]);
+    }
+
+    #[test]
+    fn duplicate_entries_in_one_source_count_once() {
+        let tiobe = vec![entry("Rust", 1, 20.0, 0.5), entry("Rust", 2, 10.0, 0.1)];
+        let pypl = vec![entry("Go", 1, 14.0, 0.3), entry("Python", 2, 9.0, -0.2)];
+        let languish = vec![entry("Ruby", 1, 13.0, 0.0)];
+        let benchmark = FxHashMap::default();
+        let techempower = FxHashMap::default();
+
+        let error = compute_schulze_records(
+            &tiobe,
+            &pypl,
+            &languish,
+            &benchmark,
+            &techempower,
+            SchulzeConfig {
+                min_source_overlap: 2,
+                max_ranked_languages: 0,
+                techempower_max_score: 1.0,
+            },
+        )
+        .expect_err("duplicates inside one source must not satisfy overlap");
+
+        assert_eq!(
+            error.to_string(),
+            "Not enough overlapping languages (0) to compute Schulze ranking"
+        );
     }
 }
