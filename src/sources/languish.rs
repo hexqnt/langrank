@@ -65,7 +65,7 @@ pub async fn fetch_languish(client: &Client) -> Result<Vec<RankingEntry>> {
         .ok_or_else(|| anyhow!("failed to extract Languish embedded JSON payload"))?;
 
     // 3) Decode JS string literal to real JSON text
-    let json_text = decode_js_string_literal(&encoded)?;
+    let json_text = decode_js_string_literal(encoded)?;
 
     // 4) Parse the object with tables we need
     let tables = parse_languish_tables(&json_text)?;
@@ -154,7 +154,7 @@ fn script_selector() -> &'static Selector {
         .get_or_init(|| Selector::parse("script[src]").expect("Languish script selector is valid"))
 }
 
-fn extract_json_parse_payload(js: &str) -> Option<String> {
+fn extract_json_parse_payload(js: &str) -> Option<&str> {
     // Find JSON.parse(' ... ') and extract the (possibly escaped) payload.
     let needle = "JSON.parse('";
     let start = js.find(needle)? + needle.len();
@@ -170,8 +170,7 @@ fn extract_json_parse_payload(js: &str) -> Option<String> {
         } else if ch == '\'' {
             // End of string if next non-empty char is ')'
             if js[i + 1..].starts_with(')') {
-                let payload = &js[start..i];
-                return Some(payload.to_string());
+                return Some(&js[start..i]);
             }
         }
         i += 1;
@@ -421,16 +420,7 @@ fn build_items_by_name_date(
 }
 
 fn as_f64(v: &Value) -> f64 {
-    v.as_f64()
-        .or_else(|| {
-            v.as_i64()
-                .and_then(|value| value.to_string().parse::<f64>().ok())
-        })
-        .or_else(|| {
-            v.as_u64()
-                .and_then(|value| value.to_string().parse::<f64>().ok())
-        })
-        .unwrap_or(0.0)
+    v.as_f64().unwrap_or(0.0)
 }
 
 fn mean_percent(m: &MetricsRaw, sum: &MetricsRaw, w: CoreWeights, total_w: f64) -> f64 {
@@ -473,7 +463,7 @@ mod tests {
     fn extracts_and_decodes_embedded_json_payload() {
         let js = r#"const payload = JSON.parse('{\\"items\\":{\\"keys\\":[] ,\\"rows\\":[]},\\"sums\\":{\\"keys\\":[],\\"rows\\":[]}}');"#;
         let encoded = extract_json_parse_payload(js).expect("payload should be extracted");
-        let decoded = decode_js_string_literal(&encoded).expect("payload should decode");
+        let decoded = decode_js_string_literal(encoded).expect("payload should decode");
         assert!(decoded.contains("items"));
         assert!(decoded.contains("sums"));
     }
