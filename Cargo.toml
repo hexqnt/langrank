@@ -4,6 +4,7 @@ version = "0.2.9"
 edition = "2024"
 license = "Apache-2.0 OR MIT"
 description = "A command-line tool to rank programming languages based on various metrics."
+authors = ["hexqnt <hexqntlab@gmail.com>"]
 repository = "https://github.com/hexqnt/langrank"
 homepage = "https://langrank.hexq.ru"
 readme = "README.md"
