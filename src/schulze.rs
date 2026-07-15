@@ -329,14 +329,14 @@ fn rank_languages(
 ) -> Vec<usize> {
     let mut ranked: Vec<usize> = (0..candidates.len()).collect();
     ranked.sort_by(|&left, &right| {
-        match preference_strengths[[left, right]].cmp(&preference_strengths[[right, left]]) {
-            Ordering::Greater => Ordering::Less,
-            Ordering::Less => Ordering::Greater,
-            Ordering::Equal => candidates[right]
-                .combined_score
-                .total_cmp(&candidates[left].combined_score)
-                .then_with(|| candidates[left].lang().cmp(candidates[right].lang())),
-        }
+        schulze_wins(preference_strengths, right)
+            .cmp(&schulze_wins(preference_strengths, left))
+            .then_with(|| {
+                candidates[right]
+                    .combined_score
+                    .total_cmp(&candidates[left].combined_score)
+            })
+            .then_with(|| candidates[left].lang().cmp(candidates[right].lang()))
     });
     ranked
 }
@@ -424,8 +424,9 @@ fn compute_strongest_paths(mut paths: Array2<usize>) -> Array2<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SchulzeConfig, compute_schulze_records};
+    use super::{SchulzeConfig, compute_schulze_records, rank_languages};
     use crate::RankingEntry;
+    use ndarray::array;
     use rustc_hash::FxHashMap;
 
     fn entry(lang: &str, rank: u32, share: f64, trend: f64) -> RankingEntry {
@@ -509,5 +510,34 @@ mod tests {
             error.to_string(),
             "Not enough overlapping languages (0) to compute Schulze ranking"
         );
+    }
+
+    #[test]
+    fn cyclic_preferences_produce_a_deterministic_ranking() {
+        let tiobe = vec![
+            entry("Alpha", 1, 3.0, 0.0),
+            entry("Beta", 2, 2.0, 0.0),
+            entry("Gamma", 3, 1.0, 0.0),
+        ];
+        let performance = FxHashMap::default();
+        let sources = super::RankingSources::new(
+            &tiobe,
+            &[],
+            &[],
+            &performance,
+            &performance,
+            SchulzeConfig {
+                min_source_overlap: 1,
+                max_ranked_languages: 0,
+                techempower_max_score: 1.0,
+            },
+        );
+        let candidates = super::build_candidates(
+            vec!["Alpha".to_owned(), "Beta".to_owned(), "Gamma".to_owned()],
+            &sources,
+        );
+        let preferences = array![[0, 2, 1], [1, 0, 2], [2, 1, 0]];
+
+        assert_eq!(rank_languages(&candidates, &preferences), vec![0, 1, 2]);
     }
 }
