@@ -1,3 +1,5 @@
+#![feature(portable_simd)]
+
 use crate::cli::Cli;
 use crate::progress::{ProgressState, Stage, run_with_spinner};
 use crate::report::{HtmlReportContext, HtmlReportPaths, save_html_report};

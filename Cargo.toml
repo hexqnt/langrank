@@ -24,7 +24,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 scraper = "0.27"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.52", features = [
+tokio = { version = "1.53", features = [
 	"macros",
 	"rt-multi-thread",
 	"fs",
@@ -38,7 +38,7 @@ rustc-hash = "2.1"
 ndarray = "0.17"
 indicatif = "0.18"
 maud = "0.27.0"
-flate2 = "1.1"
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 minify-html = "0.18.1"
 
 [dev-dependencies]
@@ -56,6 +56,11 @@ panic = "abort"
 lto = true
 codegen-units = 1
 opt-level = 3
+
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = false
 
 # rustflags = [
 # "-Ctarget-cpu=native",

@@ -3,20 +3,23 @@ use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
 use rustc_hash::FxHashMap;
 use scraper::{Html, Selector};
+use serde::Deserialize;
 use serde_json::Value;
+use std::simd::{Simd, cmp::SimdPartialEq};
 use std::sync::OnceLock;
 
 use super::{RawEntry, aggregate_entries, fetch_text_with_retry};
 
 const LANGUISH_INDEX_URL: &str = "https://tjpalmer.github.io/languish/";
+const BACKSLASH_SCAN_LANES: usize = 32;
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 struct Table {
     keys: Vec<String>,
     rows: Vec<Vec<Value>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 struct LanguishData {
     items: Table,
     sums: Table,
@@ -30,96 +33,70 @@ struct CoreWeights {
     stars: f64,
 }
 
-impl Default for CoreWeights {
-    fn default() -> Self {
-        // Languish default: issues=0, pulls=0, stars=1, soQuestions=1
-        // but I think that issues=1, pulls=1, stars=1, soQuestions=1 is better =)
-        Self {
-            issues: 1.0,
-            pulls: 1.0,
-            so_questions: 1.0,
-            stars: 1.0,
-        }
-    }
-}
+// В отличие от Languish учитываем все четыре сигнала с одинаковым весом.
+const CORE_WEIGHTS: CoreWeights = CoreWeights {
+    issues: 1.0,
+    pulls: 1.0,
+    so_questions: 1.0,
+    stars: 1.0,
+};
 
 impl CoreWeights {
-    fn total(&self) -> f64 {
+    const fn total(self) -> f64 {
         self.issues + self.pulls + self.so_questions + self.stars
     }
 }
 
 pub async fn fetch_languish(client: &Client) -> Result<Vec<RankingEntry>> {
-    // 1) Load index and discover the main chunk containing embedded data
     let index_html = fetch_text_with_retry(client, LANGUISH_INDEX_URL)
         .await
         .context("failed to download Languish index page")?;
     let main_js_url = extract_main_js_url(&index_html)
         .ok_or_else(|| anyhow!("failed to locate Languish main chunk script"))?;
 
-    // 2) Download the main JS bundle and extract JSON.parse('...') payload
     let js_body = fetch_text_with_retry(client, &main_js_url)
         .await
         .with_context(|| format!("failed to download Languish JS bundle: {main_js_url}"))?;
-    let encoded = extract_json_parse_payload(&js_body)
+    parse_languish_bundle(&js_body)
+}
+
+fn parse_languish_bundle(js_body: &str) -> Result<Vec<RankingEntry>> {
+    let encoded = extract_json_parse_payload(js_body)
         .ok_or_else(|| anyhow!("failed to extract Languish embedded JSON payload"))?;
 
-    // 3) Decode JS string literal to real JSON text
-    let json_text = decode_js_string_literal(encoded)?;
-
-    // 4) Parse the object with tables we need
+    let json_text = decode_js_string_literal(encoded);
     let tables = parse_languish_tables(&json_text)?;
-
-    // 5) Compute latest quarter and (optionally) previous
-    let dates = collect_sorted_dates(&tables.sums)?;
-    let latest = dates
-        .last()
-        .ok_or_else(|| anyhow!("Languish: no dates available in dataset"))?;
-    let prev = if dates.len() >= 2 {
-        Some(dates[dates.len() - 2].clone())
-    } else {
-        None
-    };
-
-    // 6) Build sums by date (for normalization to percentages)
-    let sums_by_date = build_sums_by_date(&tables.sums)?;
-    let latest_sum = sums_by_date
-        .get(latest.as_str())
-        .ok_or_else(|| anyhow!("Languish: missing sums for latest date {latest}"))?;
-    let prev_sum = prev.as_ref().and_then(|d| sums_by_date.get(d.as_str()));
-
-    // 7) Build items by (name,date)
-    let items_by_name_date = build_items_by_name_date(&tables.items)?;
-    let weights = CoreWeights::default();
+    let quarters = recent_quarters(&tables.sums)?;
+    let metrics_by_language = build_recent_metrics(
+        &tables.items,
+        quarters.latest.date,
+        quarters.previous.map(|quarter| quarter.date),
+    )?;
+    let weights = CORE_WEIGHTS;
     let weight_total = weights.total();
 
-    // 8) Compute mean percentage for latest (and previous for trend)
-    let mut per_lang: Vec<(String, f64, Option<f64>)> =
-        Vec::with_capacity(items_by_name_date.len());
-    for (name, by_date) in &items_by_name_date {
-        let latest_point = by_date.get(latest.as_str());
-        let latest_mean =
-            latest_point.map_or(0.0, |m| mean_percent(m, latest_sum, weights, weight_total));
-        let prev_mean = match (prev.as_ref(), prev_sum) {
-            (Some(prev_date), Some(sum)) => {
-                let prev_point = by_date.get(prev_date.as_str());
-                Some(prev_point.map_or(0.0, |m| mean_percent(m, sum, weights, weight_total)))
-            }
-            _ => None,
-        };
-        let trend = prev_mean.map(|p| latest_mean - p);
-        per_lang.push((name.clone(), latest_mean, trend));
+    let mut ranked_languages = Vec::with_capacity(metrics_by_language.len());
+    for (name, metrics) in metrics_by_language {
+        let latest_mean = metrics.latest.as_ref().map_or(0.0, |metrics| {
+            mean_percent(metrics, &quarters.latest.metrics, weights, weight_total)
+        });
+        let previous_mean = quarters.previous.map(|quarter| {
+            metrics.previous.as_ref().map_or(0.0, |metrics| {
+                mean_percent(metrics, &quarter.metrics, weights, weight_total)
+            })
+        });
+        let trend = previous_mean.map(|previous| latest_mean - previous);
+        ranked_languages.push((name.to_owned(), latest_mean, trend));
     }
 
-    // 9) Compute ranks by descending mean
-    per_lang.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    let mut entries: Vec<RawEntry> = Vec::with_capacity(per_lang.len());
-    for (idx, (name, mean, trend)) in per_lang.into_iter().enumerate() {
-        let rank = u32::try_from(idx)
+    ranked_languages.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut entries: Vec<RawEntry> = Vec::with_capacity(ranked_languages.len());
+    for (index, (name, mean, trend)) in ranked_languages.into_iter().enumerate() {
+        let rank = u32::try_from(index)
             .ok()
             .and_then(|value| value.checked_add(1));
         if rank.is_none() {
-            eprintln!("Warning: Languish rank overflow at index {idx}; omitting rank for {name}");
+            eprintln!("Warning: Languish rank overflow at index {index}; omitting rank for {name}");
         }
         if let Some(entry) = RawEntry::parse(name.as_str(), rank, mean, trend) {
             entries.push(entry);
@@ -136,7 +113,7 @@ fn extract_main_js_url(index_html: &str) -> Option<String> {
             && src.contains("/static/js/main")
             && src.ends_with(".chunk.js")
         {
-            // Ensure absolute URL
+            // Относительный путь в HTML задан от корня GitHub Pages.
             let url = if src.starts_with("http://") || src.starts_with("https://") {
                 src.to_string()
             } else {
@@ -155,7 +132,7 @@ fn script_selector() -> &'static Selector {
 }
 
 fn extract_json_parse_payload(js: &str) -> Option<&str> {
-    // Find JSON.parse(' ... ') and extract the (possibly escaped) payload.
+    // Апостроф завершает строку, только если он не экранирован и за ним идёт `)`.
     let needle = "JSON.parse('";
     let start = js.find(needle)? + needle.len();
     let bytes = js.as_bytes();
@@ -167,74 +144,88 @@ fn extract_json_parse_payload(js: &str) -> Option<&str> {
             escaped = false;
         } else if ch == '\\' {
             escaped = true;
-        } else if ch == '\'' {
-            // End of string if next non-empty char is ')'
-            if js[i + 1..].starts_with(')') {
-                return Some(&js[start..i]);
-            }
+        } else if ch == '\'' && js[i + 1..].starts_with(')') {
+            return Some(&js[start..i]);
         }
         i += 1;
     }
     None
 }
 
-fn decode_js_string_literal(encoded: &str) -> Result<String> {
-    // Trick: wrap as a JSON string to decode common escapes
-    // Need to escape existing backslashes and quotes for JSON parser.
-    let mut wrapped = String::with_capacity(encoded.len() + 2);
-    wrapped.push('"');
-    for ch in encoded.chars() {
-        match ch {
-            '"' => wrapped.push_str("\\\""),
-            '\\' => wrapped.push_str("\\\\"),
-            _ => wrapped.push(ch),
-        }
-    }
-    wrapped.push('"');
-
-    let mut decoded: String = serde_json::from_str(&wrapped)
-        .context("failed to decode JS string literal via JSON layer")?;
-
-    // Handle JS-specific escapes that JSON doesn't decode
-    decoded = decoded.replace("\\'", "'");
-    decoded = replace_js_hex_escapes(&decoded);
-    Ok(decoded)
-}
-
-fn replace_js_hex_escapes(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
+fn decode_js_string_literal(input: &str) -> String {
     let bytes = input.as_bytes();
+    let mut decoded = String::with_capacity(input.len());
+    let mut copied_until = 0;
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 3 < bytes.len() && bytes[i + 1] == b'x' {
-            let h1 = bytes[i + 2] as char;
-            let h2 = bytes[i + 3] as char;
-            if h1.is_ascii_hexdigit() && h2.is_ascii_hexdigit() {
-                let val = u32::from((hex_val(h1) << 4) | hex_val(h2));
-                if let Some(ch) = char::from_u32(val) {
-                    out.push(ch);
-                    i += 4;
-                    continue;
-                }
-            }
+
+    while let Some(offset) = find_backslash(&bytes[i..]) {
+        i += offset;
+        let run_start = i;
+        while bytes.get(i) == Some(&b'\\') {
+            i += 1;
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        let slash_count = i - run_start;
+        if slash_count.is_multiple_of(2) {
+            continue;
+        }
+
+        let escape_start = i - 1;
+        if bytes.get(i) == Some(&b'\'') {
+            decoded.push_str(&input[copied_until..escape_start]);
+            decoded.push('\'');
+            i += 1;
+            copied_until = i;
+            continue;
+        }
+
+        if i + 2 < bytes.len()
+            && bytes[i] == b'x'
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            decoded.push_str(&input[copied_until..escape_start]);
+            let value = (hex_value(bytes[i + 1]) << 4) | hex_value(bytes[i + 2]);
+            decoded.push(char::from(value));
+            i += 3;
+            copied_until = i;
+        }
     }
-    out
+
+    decoded.push_str(&input[copied_until..]);
+    decoded
 }
 
-const fn hex_val(c: char) -> u8 {
-    match c {
-        '0'..='9' => (c as u8) - b'0',
-        'a'..='f' => 10 + (c as u8) - b'a',
-        'A'..='F' => 10 + (c as u8) - b'A',
+fn find_backslash(bytes: &[u8]) -> Option<usize> {
+    let (chunks, remainder) = bytes.as_chunks::<BACKSLASH_SCAN_LANES>();
+    let backslashes = Simd::<u8, BACKSLASH_SCAN_LANES>::splat(b'\\');
+
+    for (chunk_index, &chunk) in chunks.iter().enumerate() {
+        let matches = Simd::from_array(chunk).simd_eq(backslashes).to_bitmask();
+        if matches != 0 {
+            let lane = usize::try_from(matches.trailing_zeros())
+                .expect("SIMD backslash lane index fits usize");
+            return Some(chunk_index * BACKSLASH_SCAN_LANES + lane);
+        }
+    }
+
+    let remainder_start = bytes.len() - remainder.len();
+    remainder
+        .iter()
+        .position(|&byte| byte == b'\\')
+        .map(|offset| remainder_start + offset)
+}
+
+const fn hex_value(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => 10 + byte - b'a',
+        b'A'..=b'F' => 10 + byte - b'A',
         _ => 0,
     }
 }
 
 #[derive(Default, Clone, Copy)]
-struct MetricsRaw {
+struct Metrics {
     issues: f64,
     pulls: f64,
     so_questions: f64,
@@ -259,88 +250,67 @@ struct ItemColumns {
 #[derive(Clone, Copy)]
 struct MetricsRow<'a> {
     date: &'a str,
-    metrics: MetricsRaw,
+    metrics: Metrics,
 }
 
 #[derive(Clone, Copy)]
 struct ItemRow<'a> {
     name: &'a str,
     date: &'a str,
-    metrics: MetricsRaw,
+    metrics: Metrics,
+}
+
+#[derive(Clone, Copy)]
+struct QuarterSnapshot<'a> {
+    date: &'a str,
+    metrics: Metrics,
+}
+
+struct RecentQuarters<'a> {
+    latest: QuarterSnapshot<'a>,
+    previous: Option<QuarterSnapshot<'a>>,
 }
 
 fn parse_languish_tables(js: &str) -> Result<LanguishData> {
-    let v: Value =
-        serde_json::from_str(js).context("failed to parse decoded Languish JSON object")?;
-    let items_v = v
-        .get("items")
-        .ok_or_else(|| anyhow!("Languish: missing 'items' table"))?;
-    let sums_v = v
-        .get("sums")
-        .ok_or_else(|| anyhow!("Languish: missing 'sums' table"))?;
-    let items = Table {
-        keys: table_keys(
-            items_v
-                .get("keys")
-                .ok_or_else(|| anyhow!("Languish: items.keys missing"))?,
-        )?,
-        rows: table_rows(
-            "items",
-            items_v
-                .get("rows")
-                .ok_or_else(|| anyhow!("Languish: items.rows missing"))?,
-        )?,
-    };
-    let sums = Table {
-        keys: table_keys(
-            sums_v
-                .get("keys")
-                .ok_or_else(|| anyhow!("Languish: sums.keys missing"))?,
-        )?,
-        rows: table_rows(
-            "sums",
-            sums_v
-                .get("rows")
-                .ok_or_else(|| anyhow!("Languish: sums.rows missing"))?,
-        )?,
-    };
-    Ok(LanguishData { items, sums })
+    serde_json::from_str(js).context("failed to parse decoded Languish JSON object")
 }
 
-fn table_keys(v: &Value) -> Result<Vec<String>> {
-    let arr = v
-        .as_array()
-        .ok_or_else(|| anyhow!("expected array for keys"))?;
-    Ok(arr
-        .iter()
-        .map(|k| k.as_str().unwrap_or("").to_string())
-        .collect())
-}
-
-fn table_rows(table_name: &str, v: &Value) -> Result<Vec<Vec<Value>>> {
-    let rows = v
-        .as_array()
-        .ok_or_else(|| anyhow!("expected array for {table_name} rows"))?;
-    let mut parsed = Vec::with_capacity(rows.len());
-    for row in rows {
-        if let Some(values) = row.as_array() {
-            parsed.push(values.clone());
-        }
-    }
-    Ok(parsed)
-}
-
-fn collect_sorted_dates(sums: &Table) -> Result<Vec<String>> {
+fn recent_quarters(sums: &Table) -> Result<RecentQuarters<'_>> {
     let columns = metric_columns(&sums.keys)?;
-    let mut dates: Vec<String> = sums
+    let mut dates: Vec<&str> = sums
         .rows
         .iter()
         .filter_map(|row| parse_metrics_row(row, columns))
-        .map(|row| row.date.to_string())
+        .map(|row| row.date)
         .collect();
     dates.sort_unstable();
     dates.dedup();
-    Ok(dates)
+    let latest_date = dates
+        .last()
+        .copied()
+        .ok_or_else(|| anyhow!("Languish: no dates available in dataset"))?;
+    let previous_date = dates
+        .len()
+        .checked_sub(2)
+        .and_then(|index| dates.get(index))
+        .copied();
+
+    let metrics_for_date = |date| {
+        sums.rows.iter().find_map(|row| {
+            let parsed = parse_metrics_row(row, columns)?;
+            (parsed.date == date).then_some(parsed.metrics)
+        })
+    };
+    let snapshot = |date| {
+        metrics_for_date(date)
+            .map(|metrics| QuarterSnapshot { date, metrics })
+            .ok_or_else(|| anyhow!("Languish: missing sums for date {date}"))
+    };
+
+    Ok(RecentQuarters {
+        latest: snapshot(latest_date)?,
+        previous: previous_date.map(snapshot).transpose()?,
+    })
 }
 
 fn index_of(keys: &[String], name: &str) -> Result<usize> {
@@ -368,7 +338,7 @@ fn item_columns(keys: &[String]) -> Result<ItemColumns> {
 
 fn parse_metrics_row(row: &[Value], columns: MetricColumns) -> Option<MetricsRow<'_>> {
     let date = row.get(columns.date).and_then(Value::as_str)?;
-    let metrics = MetricsRaw {
+    let metrics = Metrics {
         issues: row.get(columns.issues).map_or(0.0, as_f64),
         pulls: row.get(columns.pulls).map_or(0.0, as_f64),
         so_questions: row.get(columns.so_questions).map_or(0.0, as_f64),
@@ -387,68 +357,76 @@ fn parse_item_row(row: &[Value], columns: ItemColumns) -> Option<ItemRow<'_>> {
     })
 }
 
-fn build_sums_by_date(sums: &Table) -> Result<FxHashMap<String, MetricsRaw>> {
-    let mut map = FxHashMap::default();
-    let columns = metric_columns(&sums.keys)?;
-    for row in &sums.rows {
-        let Some(parsed) = parse_metrics_row(row, columns) else {
-            continue;
-        };
-        map.insert(parsed.date.to_string(), parsed.metrics);
-    }
-    Ok(map)
+#[derive(Default)]
+struct RecentMetrics {
+    latest: Option<Metrics>,
+    previous: Option<Metrics>,
 }
 
-fn build_items_by_name_date(
-    items: &Table,
-) -> Result<FxHashMap<String, FxHashMap<String, MetricsRaw>>> {
-    let mut map: FxHashMap<String, FxHashMap<String, MetricsRaw>> = FxHashMap::default();
+fn build_recent_metrics<'a>(
+    items: &'a Table,
+    latest: &str,
+    previous: Option<&str>,
+) -> Result<FxHashMap<&'a str, RecentMetrics>> {
+    let mut metrics_by_language: FxHashMap<&str, RecentMetrics> = FxHashMap::default();
     let columns = item_columns(&items.keys)?;
     for row in &items.rows {
         let Some(parsed) = parse_item_row(row, columns) else {
             continue;
         };
         if parsed.date < "2012Q1" {
-            // Match Languish filtering baseline
             continue;
         }
-        map.entry(parsed.name.to_string())
-            .or_default()
-            .insert(parsed.date.to_string(), parsed.metrics);
+        // Языки без данных в текущих кварталах остаются в таблице с нулевым рейтингом.
+        let current = metrics_by_language.entry(parsed.name).or_default();
+        if parsed.date == latest {
+            current.latest = Some(parsed.metrics);
+        } else if previous == Some(parsed.date) {
+            current.previous = Some(parsed.metrics);
+        }
     }
-    Ok(map)
+    Ok(metrics_by_language)
 }
 
-fn as_f64(v: &Value) -> f64 {
-    v.as_f64().unwrap_or(0.0)
+fn as_f64(value: &Value) -> f64 {
+    value.as_f64().unwrap_or(0.0)
 }
 
-fn mean_percent(m: &MetricsRaw, sum: &MetricsRaw, w: CoreWeights, total_w: f64) -> f64 {
-    if total_w <= f64::EPSILON {
+fn mean_percent(
+    metrics: &Metrics,
+    totals: &Metrics,
+    weights: CoreWeights,
+    total_weight: f64,
+) -> f64 {
+    if total_weight <= f64::EPSILON {
         return 0.0;
     }
 
     let mut weighted_sum = 0.0;
 
-    if w.issues > 0.0 && sum.issues > 0.0 && m.issues > 0.0 {
-        weighted_sum = (m.issues / sum.issues).mul_add(w.issues, weighted_sum);
+    if weights.issues > 0.0 && totals.issues > 0.0 && metrics.issues > 0.0 {
+        weighted_sum = (metrics.issues / totals.issues).mul_add(weights.issues, weighted_sum);
     }
-    if w.pulls > 0.0 && sum.pulls > 0.0 && m.pulls > 0.0 {
-        weighted_sum = (m.pulls / sum.pulls).mul_add(w.pulls, weighted_sum);
+    if weights.pulls > 0.0 && totals.pulls > 0.0 && metrics.pulls > 0.0 {
+        weighted_sum = (metrics.pulls / totals.pulls).mul_add(weights.pulls, weighted_sum);
     }
-    if w.so_questions > 0.0 && sum.so_questions > 0.0 && m.so_questions > 0.0 {
-        weighted_sum = (m.so_questions / sum.so_questions).mul_add(w.so_questions, weighted_sum);
+    if weights.so_questions > 0.0 && totals.so_questions > 0.0 && metrics.so_questions > 0.0 {
+        weighted_sum = (metrics.so_questions / totals.so_questions)
+            .mul_add(weights.so_questions, weighted_sum);
     }
-    if w.stars > 0.0 && sum.stars > 0.0 && m.stars > 0.0 {
-        weighted_sum = (m.stars / sum.stars).mul_add(w.stars, weighted_sum);
+    if weights.stars > 0.0 && totals.stars > 0.0 && metrics.stars > 0.0 {
+        weighted_sum = (metrics.stars / totals.stars).mul_add(weights.stars, weighted_sum);
     }
 
-    weighted_sum * (100.0 / total_w)
+    weighted_sum * (100.0 / total_weight)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{as_f64, decode_js_string_literal, extract_json_parse_payload};
+    use super::{
+        as_f64, build_recent_metrics, decode_js_string_literal, extract_json_parse_payload,
+        parse_languish_tables, recent_quarters,
+    };
     use serde_json::Value;
 
     #[test]
@@ -463,8 +441,62 @@ mod tests {
     fn extracts_and_decodes_embedded_json_payload() {
         let js = r#"const payload = JSON.parse('{\\"items\\":{\\"keys\\":[] ,\\"rows\\":[]},\\"sums\\":{\\"keys\\":[],\\"rows\\":[]}}');"#;
         let encoded = extract_json_parse_payload(js).expect("payload should be extracted");
-        let decoded = decode_js_string_literal(encoded).expect("payload should decode");
+        let decoded = decode_js_string_literal(encoded);
         assert!(decoded.contains("items"));
         assert!(decoded.contains("sums"));
+    }
+
+    #[test]
+    fn decodes_js_only_escapes_without_touching_json_escapes_or_utf8() {
+        assert_eq!(decode_js_string_literal(r"é\'\xe9\u2013"), r"é'é\u2013");
+        assert_eq!(decode_js_string_literal(r"\\'\\xE9"), r"\\'\\xE9");
+        assert_eq!(decode_js_string_literal(r"\\\'\\\xE9"), "\\\\'\\\\é");
+
+        let prefix = "a".repeat(super::BACKSLASH_SCAN_LANES * 2 + 1);
+        assert_eq!(
+            decode_js_string_literal(&format!(r"{prefix}\''")),
+            format!("{prefix}''")
+        );
+    }
+
+    #[test]
+    fn retains_historical_languages_without_retaining_historical_metrics() {
+        let json = r#"{
+            "items": {
+                "keys": ["name", "date", "issues", "pulls", "soQuestions", "stars"],
+                "rows": [
+                    ["Legacy", "2012Q1", 1, 1, 1, 1],
+                    ["Current", "2024Q2", 2, 2, 2, 2],
+                    ["Both", "2024Q1", 3, 3, 3, 3],
+                    ["Both", "2024Q2", 4, 4, 4, 4]
+                ]
+            },
+            "sums": {
+                "keys": ["date", "issues", "pulls", "soQuestions", "stars"],
+                "rows": [
+                    ["2024Q1", 10, 10, 10, 10],
+                    ["2024Q2", 20, 20, 20, 20]
+                ]
+            }
+        }"#;
+        let tables = parse_languish_tables(json).expect("fixture should parse");
+        let quarters = recent_quarters(&tables.sums).expect("quarters should parse");
+        let items = build_recent_metrics(
+            &tables.items,
+            quarters.latest.date,
+            quarters.previous.map(|quarter| quarter.date),
+        )
+        .expect("items should parse");
+
+        assert_eq!(quarters.latest.date, "2024Q2");
+        assert_eq!(
+            quarters.previous.map(|quarter| quarter.date),
+            Some("2024Q1")
+        );
+        assert!(items["Legacy"].latest.is_none());
+        assert!(items["Legacy"].previous.is_none());
+        assert!(items["Current"].latest.is_some());
+        assert!(items["Both"].latest.is_some());
+        assert!(items["Both"].previous.is_some());
     }
 }

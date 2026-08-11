@@ -6,7 +6,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write  # нужно для создания релиза и загрузки ассетов
+  contents: read
 
 jobs:
   build:
@@ -31,10 +31,10 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         with:
           targets: ${{ matrix.target }}
 
@@ -44,7 +44,7 @@ jobs:
       # ---- Build ----
       - name: Build (non-musl)
         if: matrix.target != 'x86_64-unknown-linux-musl'
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Build (musl via muslrust docker)
         if: matrix.target == 'x86_64-unknown-linux-musl'
@@ -52,7 +52,7 @@ jobs:
           docker run --rm -t \
             -v "${{ github.workspace }}:/volume" \
             clux/muslrust:nightly \
-            cargo build --release --target x86_64-unknown-linux-musl
+            cargo build --locked --release --target x86_64-unknown-linux-musl
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
@@ -97,6 +97,8 @@ jobs:
     name: Create GitHub Release
     needs: [build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Download all artifacts

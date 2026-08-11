@@ -15,10 +15,10 @@ jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -26,7 +26,7 @@ jobs:
       - name: Build report
         run: |
           rm -rf dist
-          cargo run --release -- \
+          cargo run --locked --release -- \
             --save-html dist/index.html \
             --save-rankings dist/rankings.csv \
             --save-schulze dist/schulze_rankings.csv \

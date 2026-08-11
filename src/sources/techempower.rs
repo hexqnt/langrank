@@ -3,15 +3,11 @@ use reqwest::{Client, Url};
 use rustc_hash::{FxHashMap, FxHashSet};
 use scraper::{Html, Selector};
 use serde::Deserialize;
-use serde_json::Value;
 use std::path::Path;
 
 use super::{CanonicalLanguage, fetch_bytes_with_retry, fetch_text_with_retry};
 
 const TFB_BENCHMARKS_URL: &str = "https://www.techempower.com/benchmarks/";
-const TEST_WEIGHTS: [f64; 6] = [1.0, 0.75, 0.75, 0.75, 1.5, 1.25];
-const TEST_NAMES: [&str; 6] = ["json", "plaintext", "db", "query", "fortune", "update"];
-pub const TECHEMPOWER_MAX_SCORE: f64 = 6.0;
 const MAX_FALLBACK_RESULTS_URLS: usize = 8;
 const MIN_SUPPORTED_ROUND: u16 = 21;
 const STATIC_FALLBACK_RESULTS_URLS: [&str; 3] = [
@@ -20,24 +16,101 @@ const STATIC_FALLBACK_RESULTS_URLS: [&str; 3] = [
     "https://www.techempower.com/benchmarks/results/round21/ph.json",
 ];
 
+#[derive(Clone, Copy)]
+struct TestConfig {
+    name: &'static str,
+    weight: f64,
+}
+
+impl TestConfig {
+    const fn new(name: &'static str, weight: f64) -> Self {
+        Self { name, weight }
+    }
+}
+
+const TESTS: [TestConfig; 6] = [
+    TestConfig::new("json", 1.0),
+    TestConfig::new("plaintext", 0.75),
+    TestConfig::new("db", 0.75),
+    TestConfig::new("query", 0.75),
+    TestConfig::new("fortune", 1.5),
+    TestConfig::new("update", 1.25),
+];
+const TEST_COUNT: usize = TESTS.len();
+
+const fn total_test_weight() -> f64 {
+    let mut total = 0.0;
+    let mut index = 0;
+    while index < TEST_COUNT {
+        total += TESTS[index].weight;
+        index += 1;
+    }
+    total
+}
+
+pub const TECHEMPOWER_MAX_SCORE: f64 = total_test_weight();
+
 #[derive(Debug, Clone, Copy, Default)]
-struct FrameworkScores {
-    rps: [f64; 6],
-    present: [bool; 6],
+struct FrameworkThroughput {
+    rps: [f64; TEST_COUNT],
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct TechempowerResults {
-    raw_data: FxHashMap<String, Value>,
-    test_metadata: Vec<TfbTestMetadata>,
+struct TechEmpowerResults<'a> {
+    #[serde(borrow)]
+    raw_data: BenchmarkData<'a>,
+    #[serde(borrow)]
+    test_metadata: Vec<FrameworkMetadata<'a>>,
+}
+
+type RunsByFramework<'a> = FxHashMap<&'a str, Vec<BenchmarkRun>>;
+
+#[derive(Debug, Deserialize, Default)]
+struct BenchmarkData<'a> {
+    #[serde(borrow, default)]
+    json: RunsByFramework<'a>,
+    #[serde(borrow, default)]
+    plaintext: RunsByFramework<'a>,
+    #[serde(borrow, default)]
+    db: RunsByFramework<'a>,
+    #[serde(borrow, default)]
+    query: RunsByFramework<'a>,
+    #[serde(borrow, default)]
+    fortune: RunsByFramework<'a>,
+    #[serde(borrow, default)]
+    update: RunsByFramework<'a>,
+}
+
+impl<'a> BenchmarkData<'a> {
+    const fn tests(&self) -> [&RunsByFramework<'a>; TEST_COUNT] {
+        [
+            &self.json,
+            &self.plaintext,
+            &self.db,
+            &self.query,
+            &self.fortune,
+            &self.update,
+        ]
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BenchmarkRun {
+    #[serde(default)]
+    total_requests: f64,
+    #[serde(default)]
+    start_time: f64,
+    #[serde(default)]
+    end_time: f64,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-struct TfbTestMetadata {
-    framework: String,
-    language: String,
+struct FrameworkMetadata<'a> {
+    framework: &'a str,
+    language: &'a str,
 }
 
 pub async fn fetch_techempower(client: &Client) -> Result<FxHashMap<String, f64>> {
@@ -68,10 +141,13 @@ async fn fetch_techempower_for_results_url(
     let bytes = fetch_bytes_with_retry(client, results_url)
         .await
         .with_context(|| format!("failed to download TechEmpower results from {results_url}"))?;
-    let results: TechempowerResults =
-        serde_json::from_slice(&bytes).context("failed to parse TechEmpower results JSON")?;
-    let scores = compute_language_scores(&results)?;
-    Ok(scores)
+    parse_techempower_results(&bytes)
+}
+
+fn parse_techempower_results(bytes: &[u8]) -> Result<FxHashMap<String, f64>> {
+    let results: TechEmpowerResults<'_> =
+        serde_json::from_slice(bytes).context("failed to parse TechEmpower results JSON")?;
+    compute_language_scores(&results)
 }
 
 fn resolve_url(base_url: &str, href: &str) -> String {
@@ -179,118 +255,91 @@ fn dedup_urls_preserve_order(urls: Vec<String>) -> Vec<String> {
     unique
 }
 
-fn compute_language_scores(results: &TechempowerResults) -> Result<FxHashMap<String, f64>> {
+fn compute_language_scores(results: &TechEmpowerResults<'_>) -> Result<FxHashMap<String, f64>> {
     let framework_languages = map_framework_languages(&results.test_metadata);
 
-    let mut per_framework: FxHashMap<String, FrameworkScores> = FxHashMap::default();
-    let mut max_rps_by_test = [0.0_f64; 6];
+    let mut throughput_by_framework: FxHashMap<&str, FrameworkThroughput> = FxHashMap::default();
+    let mut max_rps_by_test = [0.0_f64; TEST_COUNT];
 
-    for (test_name, frameworks) in &results.raw_data {
-        let Some(test_idx) = test_index(test_name.as_str()) else {
-            continue;
-        };
-        let Some(frameworks_obj) = frameworks.as_object() else {
-            continue;
-        };
-        for (framework, runs_value) in frameworks_obj {
-            let Some(runs) = runs_value.as_array() else {
-                continue;
-            };
+    for (test_idx, frameworks) in results.raw_data.tests().into_iter().enumerate() {
+        for (framework, runs) in frameworks {
             let max_rps = runs
                 .iter()
-                .filter_map(calculate_rps_value)
+                .filter_map(BenchmarkRun::requests_per_second)
                 .fold(0.0_f64, f64::max);
             if max_rps <= 0.0 {
                 continue;
             }
-            let entry = per_framework.entry(framework.clone()).or_default();
+            let entry = throughput_by_framework.entry(framework).or_default();
             entry.rps[test_idx] = max_rps;
-            entry.present[test_idx] = true;
             if max_rps > max_rps_by_test[test_idx] {
                 max_rps_by_test[test_idx] = max_rps;
             }
         }
     }
 
-    for (idx, max_rps) in max_rps_by_test.iter().enumerate() {
-        if *max_rps <= 0.0 {
-            return Err(anyhow!(
-                "missing TechEmpower data for test '{}'",
-                TEST_NAMES[idx]
-            ));
+    for (test, max_rps) in TESTS.iter().zip(max_rps_by_test) {
+        if max_rps <= 0.0 {
+            return Err(anyhow!("missing TechEmpower data for test '{}'", test.name));
         }
     }
 
-    let mut best_by_lang: FxHashMap<String, f64> = FxHashMap::default();
-    for (framework, scores) in per_framework {
-        if !scores.present.iter().all(|present| *present) {
+    let mut best_by_language: FxHashMap<String, f64> = FxHashMap::default();
+    for (framework, throughput) in throughput_by_framework {
+        if throughput.rps.iter().any(|rps| *rps <= 0.0) {
             continue;
         }
         let mut composite = 0.0_f64;
-        for idx in 0..TEST_WEIGHTS.len() {
-            let max_rps = max_rps_by_test[idx];
-            if max_rps <= 0.0 {
-                continue;
-            }
-            composite = (scores.rps[idx] / max_rps).mul_add(TEST_WEIGHTS[idx], composite);
+        for ((rps, max_rps), test) in throughput.rps.iter().zip(max_rps_by_test).zip(TESTS) {
+            composite = (*rps / max_rps).mul_add(test.weight, composite);
         }
         if composite <= 0.0 {
             continue;
         }
-        let Some(lang) = framework_languages.get(&framework) else {
+        let Some(language) = framework_languages.get(&framework) else {
             continue;
         };
-        let entry = best_by_lang.entry(lang.clone()).or_insert(0.0);
+        let entry = best_by_language.entry(language.clone()).or_insert(0.0);
         if composite > *entry {
             *entry = composite;
         }
     }
 
-    if best_by_lang.is_empty() {
+    if best_by_language.is_empty() {
         return Err(anyhow!("no TechEmpower language scores computed"));
     }
 
-    Ok(best_by_lang)
+    Ok(best_by_language)
 }
 
-fn map_framework_languages(metadata: &[TfbTestMetadata]) -> FxHashMap<String, String> {
-    let mut map: FxHashMap<String, String> = FxHashMap::default();
+fn map_framework_languages<'a>(metadata: &[FrameworkMetadata<'a>]) -> FxHashMap<&'a str, String> {
+    let mut map = FxHashMap::default();
     for entry in metadata {
-        let Some(lang) = CanonicalLanguage::parse(entry.language.as_str()) else {
+        let Some(language) = CanonicalLanguage::parse(entry.language) else {
             continue;
         };
-        map.entry(entry.framework.clone())
-            .or_insert_with(|| lang.into_string());
+        map.entry(entry.framework)
+            .or_insert_with(|| language.into_string());
     }
     map
 }
 
-fn test_index(name: &str) -> Option<usize> {
-    match name {
-        "json" => Some(0),
-        "plaintext" => Some(1),
-        "db" => Some(2),
-        "query" => Some(3),
-        "fortune" => Some(4),
-        "update" => Some(5),
-        _ => None,
+impl BenchmarkRun {
+    fn requests_per_second(&self) -> Option<f64> {
+        let duration = self.end_time - self.start_time;
+        if self.total_requests <= 0.0 || duration <= 0.0 {
+            return None;
+        }
+        Some(self.total_requests / (duration / 1000.0))
     }
-}
-
-fn calculate_rps_value(run: &Value) -> Option<f64> {
-    let total = run.get("totalRequests")?.as_f64()?;
-    let start = run.get("startTime")?.as_f64()?;
-    let end = run.get("endTime")?.as_f64()?;
-    let duration_ms = end - start;
-    if total <= 0.0 || duration_ms <= 0.0 {
-        return None;
-    }
-    Some(total / (duration_ms / 1000.0))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{dedup_urls_preserve_order, extract_round_results_urls};
+    use super::{
+        TECHEMPOWER_MAX_SCORE, TechEmpowerResults, compute_language_scores,
+        dedup_urls_preserve_order, extract_round_results_urls,
+    };
 
     #[test]
     fn extracts_round_ph_urls() {
@@ -329,5 +378,36 @@ mod tests {
                 "https://www.techempower.com/benchmarks/results/round22/ph.json",
             ]
         );
+    }
+
+    #[test]
+    fn parses_only_supported_tests_and_skips_incomplete_runs() {
+        let run =
+            |requests| format!(r#"{{"totalRequests":{requests},"startTime":1000,"endTime":2000}}"#);
+        let tests = ["json", "plaintext", "db", "query", "fortune", "update"]
+            .map(|name| {
+                format!(
+                    r#""{name}":{{"fast":[{{}},{fast}],"slow":[{slow}]}}"#,
+                    fast = run(2000),
+                    slow = run(1000),
+                )
+            })
+            .join(",");
+        let json = format!(
+            r#"{{
+                "rawData":{{{tests},"cached-query":"ignored"}},
+                "testMetadata":[
+                    {{"framework":"fast","language":"rust"}},
+                    {{"framework":"slow","language":"java"}}
+                ]
+            }}"#
+        );
+
+        let results: TechEmpowerResults<'_> =
+            serde_json::from_str(&json).expect("fixture should parse");
+        let scores = compute_language_scores(&results).expect("scores should compute");
+
+        assert_eq!(scores.get("Rust"), Some(&TECHEMPOWER_MAX_SCORE));
+        assert_eq!(scores.get("Java"), Some(&(TECHEMPOWER_MAX_SCORE / 2.0)));
     }
 }
