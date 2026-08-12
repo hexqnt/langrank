@@ -1,17 +1,16 @@
 use crate::RankingEntry;
 use anyhow::{Context, Result, anyhow};
+use memchr::memchr;
 use reqwest::Client;
 use rustc_hash::FxHashMap;
 use scraper::{Html, Selector};
 use serde::Deserialize;
 use serde_json::Value;
-use std::simd::{Simd, cmp::SimdPartialEq};
 use std::sync::OnceLock;
 
 use super::{RawEntry, aggregate_entries, fetch_text_with_retry};
 
 const LANGUISH_INDEX_URL: &str = "https://tjpalmer.github.io/languish/";
-const BACKSLASH_SCAN_LANES: usize = 32;
 
 #[derive(Debug, Deserialize)]
 struct Table {
@@ -47,6 +46,11 @@ impl CoreWeights {
     }
 }
 
+/// Загружает и разбирает актуальный рейтинг Languish.
+///
+/// # Errors
+///
+/// Возвращает ошибку при сбое HTTP-запроса или несовместимом формате данных.
 pub async fn fetch_languish(client: &Client) -> Result<Vec<RankingEntry>> {
     let index_html = fetch_text_with_retry(client, LANGUISH_INDEX_URL)
         .await
@@ -196,23 +200,7 @@ fn decode_js_string_literal(input: &str) -> String {
 }
 
 fn find_backslash(bytes: &[u8]) -> Option<usize> {
-    let (chunks, remainder) = bytes.as_chunks::<BACKSLASH_SCAN_LANES>();
-    let backslashes = Simd::<u8, BACKSLASH_SCAN_LANES>::splat(b'\\');
-
-    for (chunk_index, &chunk) in chunks.iter().enumerate() {
-        let matches = Simd::from_array(chunk).simd_eq(backslashes).to_bitmask();
-        if matches != 0 {
-            let lane = usize::try_from(matches.trailing_zeros())
-                .expect("SIMD backslash lane index fits usize");
-            return Some(chunk_index * BACKSLASH_SCAN_LANES + lane);
-        }
-    }
-
-    let remainder_start = bytes.len() - remainder.len();
-    remainder
-        .iter()
-        .position(|&byte| byte == b'\\')
-        .map(|offset| remainder_start + offset)
+    memchr(b'\\', bytes)
 }
 
 const fn hex_value(byte: u8) -> u8 {
@@ -452,7 +440,7 @@ mod tests {
         assert_eq!(decode_js_string_literal(r"\\'\\xE9"), r"\\'\\xE9");
         assert_eq!(decode_js_string_literal(r"\\\'\\\xE9"), "\\\\'\\\\é");
 
-        let prefix = "a".repeat(super::BACKSLASH_SCAN_LANES * 2 + 1);
+        let prefix = "a".repeat(65);
         assert_eq!(
             decode_js_string_literal(&format!(r"{prefix}\''")),
             format!("{prefix}''")

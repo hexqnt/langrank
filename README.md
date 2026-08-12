@@ -13,6 +13,7 @@ LangRank — утилита на Rust, которая собирает свеж�
 
 - [📚 О проекте](#-о-проекте)
 - [🛠️ Сборка и запуск](#️-сборка-и-запуск)
+- [📦 Использование как библиотеки](#-использование-как-библиотеки)
 - [💾 Сохранение выгрузок](#-сохранение-выгрузок)
 - [🖼️ HTML-отчёт](#️-html-отчёт)
 - [🧮 Алгоритм Шульце](#-алгоритм-шульце)
@@ -39,6 +40,50 @@ cargo run --release
 # Подробный вывод с полным Schulze-ранжированием
 cargo run --release -- --full-output
 ```
+
+## 📦 Использование как библиотеки
+
+Пакет одновременно предоставляет CLI и библиотеку для загрузки нормализованных данных без
+привязки к конкретной базе данных. Из соседнего проекта её можно подключить по пути:
+
+```toml
+[dependencies]
+anyhow = "1.0"
+langrank = { path = "../langrank", default-features = false }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+Отключение default features исключает из графа зависимостей компоненты, нужные только CLI:
+парсер аргументов, терминальные индикаторы и генерацию HTML-отчёта.
+
+`Fetcher::fetch_rankings` параллельно загружает TIOBE, PYPL и Languish. В итоговом наборе PYPL
+совокупная запись `C/C++` разделяется с учётом отдельных долей C и C++ из TIOBE.
+
+```rust,no_run
+use anyhow::Result;
+use langrank::Fetcher;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let datasets = Fetcher::new()?.fetch_rankings().await?;
+
+    for dataset in datasets {
+        let (source, entries) = dataset.into_parts();
+        for entry in entries {
+            println!("{source}: {} — {:?}", entry.lang, entry.rank);
+            // Здесь вызывающий проект может выполнить INSERT/UPSERT.
+        }
+    }
+
+    Ok(())
+}
+```
+
+Для загрузки только одного исходного рейтинга без межисточникового преобразования используйте
+`Fetcher::fetch(RankingSource::Tiobe)`. Низкоуровневые `fetch_tiobe`, `fetch_pypl`,
+`fetch_languish`, загрузчики Benchmarks Game и TechEmpower также доступны напрямую и принимают
+настроенный `reqwest::Client`. Высокоуровневые методы возвращают типизированный `FetchError`,
+по которому можно определить источник и вид сбоя.
 
 ## 💾 Сохранение выгрузок
 

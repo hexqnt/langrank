@@ -1,5 +1,5 @@
-use crate::RankingEntry;
 use anyhow::{Result, anyhow};
+use langrank::RankingEntry;
 use ndarray::{Array2, Zip};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
@@ -425,7 +425,7 @@ fn compute_strongest_paths(mut paths: Array2<usize>) -> Array2<usize> {
 #[cfg(test)]
 mod tests {
     use super::{SchulzeConfig, compute_schulze_records, rank_languages};
-    use crate::RankingEntry;
+    use langrank::RankingEntry;
     use ndarray::array;
     use rustc_hash::FxHashMap;
 

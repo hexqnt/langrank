@@ -114,12 +114,22 @@ fn canonical_language_id(
     id
 }
 
+/// Загружает исходный CSV Benchmarks Game.
+///
+/// # Errors
+///
+/// Возвращает ошибку, если данные не удалось получить по HTTP.
 pub async fn download_benchmark_data(client: &Client) -> Result<Vec<u8>> {
     fetch_bytes_with_retry(client, BENCH_URL)
         .await
         .context("failed to download benchmark dataset")
 }
 
+/// Вычисляет нормализованные показатели языков из CSV Benchmarks Game.
+///
+/// # Errors
+///
+/// Возвращает ошибку при некорректной структуре CSV или сбое фоновой задачи.
 pub async fn load_benchmark_scores(bytes: Vec<u8>) -> Result<FxHashMap<String, f64>> {
     let scores = task::spawn_blocking(move || compute_benchmark_scores_sync(&bytes))
         .await

@@ -1,10 +1,9 @@
-pub mod benchmarks;
-pub mod languish;
-pub mod pypl;
-pub mod techempower;
-pub mod tiobe;
+mod benchmarks;
+mod languish;
+mod pypl;
+mod techempower;
+mod tiobe;
 
-pub use crate::parsing::{parse_percent, parse_u32};
 pub use benchmarks::{download_benchmark_data, load_benchmark_scores};
 pub use languish::fetch_languish;
 pub use pypl::fetch_pypl;
@@ -12,6 +11,7 @@ pub use techempower::{TECHEMPOWER_MAX_SCORE, fetch_techempower};
 pub use tiobe::fetch_tiobe;
 
 use crate::RankingEntry;
+use crate::parsing::{parse_percent, parse_u32};
 use anyhow::{Context, Result, anyhow};
 use reqwest::{Client, Response};
 use rustc_hash::FxHashMap;
@@ -26,7 +26,7 @@ mod raw_entry {
     use super::CanonicalLanguage;
 
     #[derive(Debug)]
-    pub struct RawEntry {
+    pub(super) struct RawEntry {
         lang: CanonicalLanguage,
         rank: Option<u32>,
         share: f64,
@@ -34,7 +34,7 @@ mod raw_entry {
     }
 
     impl RawEntry {
-        pub fn parse(
+        pub(super) fn parse(
             lang: &str,
             rank: Option<u32>,
             share: f64,
@@ -49,23 +49,23 @@ mod raw_entry {
             })
         }
 
-        pub fn into_parts(self) -> (CanonicalLanguage, Option<u32>, f64, Option<f64>) {
+        pub(super) fn into_parts(self) -> (CanonicalLanguage, Option<u32>, f64, Option<f64>) {
             (self.lang, self.rank, self.share, self.trend)
         }
     }
 }
 
-pub use raw_entry::RawEntry;
+use raw_entry::RawEntry;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct CanonicalLanguage(String);
+struct CanonicalLanguage(String);
 
 impl CanonicalLanguage {
-    pub fn parse(input: &str) -> Option<Self> {
+    fn parse(input: &str) -> Option<Self> {
         canonicalize_language(input).map(Self)
     }
 
-    pub fn into_string(self) -> String {
+    fn into_string(self) -> String {
         self.0
     }
 }
@@ -78,7 +78,7 @@ struct AggregatedEntry {
     trend_seen: bool,
 }
 
-pub async fn fetch_text_with_retry(client: &Client, url: &str) -> Result<String> {
+async fn fetch_text_with_retry(client: &Client, url: &str) -> Result<String> {
     send_with_retry(client, url)
         .await?
         .text()
@@ -86,7 +86,7 @@ pub async fn fetch_text_with_retry(client: &Client, url: &str) -> Result<String>
         .with_context(|| format!("failed to read response body from {url}"))
 }
 
-pub async fn fetch_bytes_with_retry(client: &Client, url: &str) -> Result<Vec<u8>> {
+async fn fetch_bytes_with_retry(client: &Client, url: &str) -> Result<Vec<u8>> {
     let bytes = send_with_retry(client, url)
         .await?
         .bytes()
@@ -149,7 +149,7 @@ fn describe_error(error: &anyhow::Error) -> String {
     }
 }
 
-pub fn aggregate_entries(entries: Vec<RawEntry>) -> Vec<RankingEntry> {
+fn aggregate_entries(entries: Vec<RawEntry>) -> Vec<RankingEntry> {
     let mut aggregated: FxHashMap<CanonicalLanguage, AggregatedEntry> = FxHashMap::default();
 
     for entry in entries {
@@ -183,7 +183,7 @@ pub fn aggregate_entries(entries: Vec<RawEntry>) -> Vec<RankingEntry> {
     result
 }
 
-pub fn extract_cell_text(cell: ElementRef<'_>) -> String {
+fn extract_cell_text(cell: ElementRef<'_>) -> String {
     let mut out = String::new();
     for chunk in cell.text() {
         let trimmed = chunk.trim();
@@ -209,7 +209,7 @@ fn normalize_alias_key(input: &str) -> String {
     out
 }
 
-pub fn canonicalize_language(input: &str) -> Option<String> {
+fn canonicalize_language(input: &str) -> Option<String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return None;

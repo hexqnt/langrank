@@ -40,6 +40,11 @@ impl<'a> PyplRow<'a> {
     }
 }
 
+/// Загружает и разбирает актуальный рейтинг PYPL.
+///
+/// # Errors
+///
+/// Возвращает ошибку при сбое HTTP-запроса или несовместимом формате данных.
 pub async fn fetch_pypl(client: &Client) -> Result<Vec<RankingEntry>> {
     let body = fetch_text_with_retry(client, PYPL_URL)
         .await

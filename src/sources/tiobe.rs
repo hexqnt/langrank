@@ -66,6 +66,11 @@ impl<'a> OtherRow<'a> {
     }
 }
 
+/// Загружает и разбирает актуальный индекс TIOBE.
+///
+/// # Errors
+///
+/// Возвращает ошибку, если страницу не удалось получить по HTTP.
 pub async fn fetch_tiobe(client: &Client) -> Result<Vec<RankingEntry>> {
     let body = fetch_text_with_retry(client, TIOBE_URL)
         .await

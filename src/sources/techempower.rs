@@ -113,6 +113,12 @@ struct FrameworkMetadata<'a> {
     language: &'a str,
 }
 
+/// Загружает `TechEmpower` и вычисляет лучший показатель для каждого языка.
+///
+/// # Errors
+///
+/// Возвращает ошибку, если ни один поддерживаемый источник результатов не
+/// удалось загрузить и разобрать.
 pub async fn fetch_techempower(client: &Client) -> Result<FxHashMap<String, f64>> {
     let fallback_urls = fallback_results_urls(client).await;
     let mut errors: Vec<String> = Vec::new();

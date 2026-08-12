@@ -3,7 +3,7 @@ name = "langrank"
 version = "0.2.9"
 edition = "2024"
 license = "Apache-2.0 OR MIT"
-description = "A command-line tool to rank programming languages based on various metrics."
+description = "A library and CLI for ranking programming languages using multiple data sources."
 authors = ["hexqnt <hexqntlab@gmail.com>"]
 repository = "https://github.com/hexqnt/langrank"
 homepage = "https://langrank.hexq.ru"
@@ -11,9 +11,26 @@ readme = "README.md"
 keywords = ["programming-language", "ranking", "cli", "benchmark", "schulze"]
 categories = ["command-line-utilities"]
 
+[features]
+default = ["cli"]
+cli = [
+	"dep:chrono",
+	"dep:clap",
+	"dep:clap_complete",
+	"dep:colored",
+	"dep:flate2",
+	"dep:indicatif",
+	"dep:maud",
+	"dep:minify-html",
+	"dep:ndarray",
+	"tokio/fs",
+	"tokio/rt-multi-thread",
+]
+
 [dependencies]
 anyhow = "1.0"
 csv = "1.4"
+memchr = "2.7"
 reqwest = { version = "0.13", default-features = false, features = [
 	"gzip",
 	"json",
@@ -21,30 +38,35 @@ reqwest = { version = "0.13", default-features = false, features = [
 	"webpki-roots",
 	"socks",
 ] }
+rustc-hash = "2.1"
 scraper = "0.27"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+thiserror = "2.0"
 tokio = { version = "1.53", features = [
 	"macros",
-	"rt-multi-thread",
-	"fs",
+	"rt",
 	"time",
 ] }
-colored = "3.1"
-clap = { version = "4.6", features = ["derive"] }
-chrono = { version = "0.4", features = ["clock"] }
-clap_complete = "4.6"
-rustc-hash = "2.1"
-ndarray = "0.17"
-indicatif = "0.18"
-maud = "0.27.0"
-flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
-minify-html = "0.18.1"
+chrono = { version = "0.4", features = ["clock"], optional = true }
+clap = { version = "4.6", features = ["derive"], optional = true }
+clap_complete = { version = "4.6", optional = true }
+colored = { version = "3.1", optional = true }
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"], optional = true }
+indicatif = { version = "0.18", optional = true }
+maud = { version = "0.27.0", optional = true }
+minify-html = { version = "0.18.1", optional = true }
+ndarray = { version = "0.17", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = [
 	"html_reports",
 ] }
+
+[[bin]]
+name = "langrank"
+path = "src/main.rs"
+required-features = ["cli"]
 
 [[bench]]
 name = "parsing"

@@ -1,13 +1,7 @@
-#![feature(portable_simd)]
-
 use crate::cli::Cli;
 use crate::progress::{ProgressState, Stage, run_with_spinner};
 use crate::report::{HtmlReportContext, HtmlReportPaths, save_html_report};
 use crate::schulze::{SchulzeConfig, SchulzeRecord, compute_schulze_records};
-use crate::sources::{
-    TECHEMPOWER_MAX_SCORE, download_benchmark_data, fetch_languish, fetch_pypl, fetch_techempower,
-    fetch_tiobe, load_benchmark_scores,
-};
 use crate::summary::{SummaryContext, SummaryPaths, print_summary};
 use anyhow::{Context, Result, anyhow};
 use chrono::Local;
@@ -15,35 +9,27 @@ use clap::Parser;
 use csv::Writer;
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use reqwest::Client;
+use langrank::{
+    Fetcher, MIN_RANKING_ENTRIES, RankingEntry, RankingSource, TECHEMPOWER_MAX_SCORE,
+    download_benchmark_data, fetch_languish, fetch_pypl, fetch_techempower, fetch_tiobe,
+    load_benchmark_scores, reconcile_pypl_with_tiobe,
+};
 use serde::Serialize;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use tokio::fs;
 
 mod cli;
 mod formatting;
-mod parsing;
 mod progress;
 mod report;
 mod schulze;
-mod sources;
 mod summary;
 
-const HTTP_TIMEOUT_SECONDS: u64 = 20;
-const MIN_SOURCE_ENTRIES: usize = 10;
 const MIN_BENCHMARK_LANGUAGES: usize = 10;
 const MIN_TECHEMPOWER_LANGUAGES: usize = 10;
 const MIN_SOURCE_OVERLAP: usize = 3;
 const MAX_RANKED_LANGUAGES: usize = 0;
-#[derive(Debug, Serialize, Clone)]
-pub struct RankingEntry {
-    pub lang: String,
-    pub rank: Option<u32>,
-    pub share: f64,
-    pub trend: Option<f64>,
-}
 
 #[allow(clippy::too_many_lines)]
 #[tokio::main]
@@ -77,11 +63,8 @@ async fn main() -> Result<()> {
 
     let run_started_at = Local::now();
 
-    let client = Client::builder()
-        .user_agent("lang-rank-fetcher/0.1")
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECONDS))
-        .build()
-        .context("failed to build HTTP client")?;
+    let fetcher = Fetcher::new()?;
+    let client = fetcher.client();
 
     let progress_enabled = !no_progress && std::io::stderr().is_terminal();
     let progress = if progress_enabled {
@@ -93,47 +76,47 @@ async fn main() -> Result<()> {
     let (tiobe, mut pypl, languish, bench_bytes, techempower_scores) =
         if let Some(progress) = progress.as_ref() {
             tokio::try_join!(
-                run_with_spinner(progress, Stage::Fetch, "TIOBE", fetch_tiobe(&client)),
-                run_with_spinner(progress, Stage::Fetch, "PYPL", fetch_pypl(&client)),
-                run_with_spinner(progress, Stage::Fetch, "Languish", fetch_languish(&client)),
+                run_with_spinner(progress, Stage::Fetch, "TIOBE", fetch_tiobe(client)),
+                run_with_spinner(progress, Stage::Fetch, "PYPL", fetch_pypl(client)),
+                run_with_spinner(progress, Stage::Fetch, "Languish", fetch_languish(client)),
                 run_with_spinner(
                     progress,
                     Stage::Fetch,
                     "Benchmarks",
-                    download_benchmark_data(&client)
+                    download_benchmark_data(client)
                 ),
                 run_with_spinner(
                     progress,
                     Stage::Fetch,
                     "TechEmpower",
-                    fetch_techempower(&client)
+                    fetch_techempower(client)
                 )
             )?
         } else {
             tokio::try_join!(
-                fetch_tiobe(&client),
-                fetch_pypl(&client),
-                fetch_languish(&client),
-                download_benchmark_data(&client),
-                fetch_techempower(&client)
+                fetch_tiobe(client),
+                fetch_pypl(client),
+                fetch_languish(client),
+                download_benchmark_data(client),
+                fetch_techempower(client)
             )?
         };
 
     let pypl_original_len = pypl.len();
-    adjust_pypl_entries(&tiobe, &mut pypl);
+    reconcile_pypl_with_tiobe(&tiobe, &mut pypl);
 
-    ensure_min_entries("TIOBE", tiobe.len(), MIN_SOURCE_ENTRIES)?;
-    ensure_min_entries("PYPL", pypl_original_len, MIN_SOURCE_ENTRIES)?;
-    ensure_min_entries("Languish", languish.len(), MIN_SOURCE_ENTRIES)?;
+    ensure_min_entries("TIOBE", tiobe.len(), MIN_RANKING_ENTRIES)?;
+    ensure_min_entries("PYPL", pypl_original_len, MIN_RANKING_ENTRIES)?;
+    ensure_min_entries("Languish", languish.len(), MIN_RANKING_ENTRIES)?;
 
     let rankings_output = if let Some(path) = save_rankings.as_ref() {
         Some(
             save_rankings_csv(
                 path.as_path(),
                 &[
-                    (SourceKind::Tiobe, &tiobe),
-                    (SourceKind::Pypl, &pypl),
-                    (SourceKind::Languish, &languish),
+                    (RankingSource::Tiobe, &tiobe),
+                    (RankingSource::Pypl, &pypl),
+                    (RankingSource::Languish, &languish),
                 ],
                 archive_csv,
             )
@@ -312,14 +295,14 @@ fn ensure_min_entries(label: &str, count: usize, min: usize) -> Result<()> {
 
 async fn save_rankings_csv(
     path: &Path,
-    sources: &[(SourceKind, &[RankingEntry])],
+    sources: &[(RankingSource, &[RankingEntry])],
     archive: bool,
 ) -> Result<PathBuf> {
     let serialized = serialize_rankings(sources)?;
     write_csv_output(path, &serialized, archive).await
 }
 
-fn serialize_rankings(sources: &[(SourceKind, &[RankingEntry])]) -> Result<Vec<u8>> {
+fn serialize_rankings(sources: &[(RankingSource, &[RankingEntry])]) -> Result<Vec<u8>> {
     let mut writer = Writer::from_writer(Vec::new());
     for (source, entries) in sources {
         for entry in *entries {
@@ -338,55 +321,9 @@ fn serialize_rankings(sources: &[(SourceKind, &[RankingEntry])]) -> Result<Vec<u
     finalize_writer(writer, "ranking CSV writer")
 }
 
-fn adjust_pypl_entries(tiobe: &[RankingEntry], pypl: &mut Vec<RankingEntry>) {
-    let Some(c_data) = tiobe.iter().find(|entry| entry.lang == "C") else {
-        return;
-    };
-    let Some(cpp_data) = tiobe.iter().find(|entry| entry.lang == "C++") else {
-        return;
-    };
-    let Some(position) = pypl.iter().position(|entry| entry.lang == "C/C++") else {
-        return;
-    };
-
-    let combined = pypl.remove(position);
-    let share_sum = c_data.share + cpp_data.share;
-    if share_sum <= f64::EPSILON {
-        pypl.push(combined);
-        pypl.sort_by(|a, b| a.lang.cmp(&b.lang));
-        return;
-    }
-
-    let cpp_ratio = cpp_data.share / share_sum;
-    let c_ratio = 1.0 - cpp_ratio;
-    let entries = [("C++", cpp_ratio), ("C", c_ratio)];
-
-    for (lang, ratio) in entries {
-        let share = combined.share * ratio;
-        let trend = combined.trend.map(|value| value * ratio);
-        let splitted = RankingEntry {
-            lang: lang.to_string(),
-            rank: combined.rank,
-            share,
-            trend,
-        };
-        pypl.push(splitted);
-    }
-
-    pypl.sort_by(|a, b| a.lang.cmp(&b.lang));
-}
-
-#[derive(Debug, Serialize, Copy, Clone, Eq, PartialEq)]
-#[serde(rename_all = "lowercase")]
-enum SourceKind {
-    Tiobe,
-    Pypl,
-    Languish,
-}
-
 #[derive(Debug, Serialize)]
 struct CsvRecord<'a> {
-    source: SourceKind,
+    source: RankingSource,
     lang: &'a str,
     rank: Option<u32>,
     share: f64,
