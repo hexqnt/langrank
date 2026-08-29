@@ -1,216 +1,143 @@
 # 🌟 LangRank
 
+[🇺🇸 English](./README.md) · [🇷🇺 Русский](./README.ru.md)
+
 [![CI](https://github.com/hexqnt/langrank/actions/workflows/ci.yml/badge.svg)](https://github.com/hexqnt/langrank/actions/workflows/ci.yml)
 [![Cloudflare Pages](https://github.com/hexqnt/langrank/actions/workflows/deploy.yml/badge.svg)](https://github.com/hexqnt/langrank/actions/workflows/deploy.yml)
 
-LangRank — утилита на Rust, которая собирает свежие рейтинги популярности языков программирования (TIOBE, PYPL, Languish), объединяет их с данными Benchmarks Game и TechEmpower Framework Benchmarks, и вычисляет итоговое ранжирование по методу Шульце.
+LangRank is a command-line tool that combines programming-language popularity and
+performance data into a single ranking using the Schulze method.
 
-![LangRank poster](img/poster.gif)
+[View the latest report](https://langrank.hexq.ru/) ·
+[Download LangRank](https://github.com/hexqnt/langrank/releases/latest)
 
-<sup>🎨 Визуализация итогового рейтинга</sup>
+![LangRank ranking visualization](img/poster.gif)
 
-## 📋 Содержание
+## Installation
 
-- [📚 О проекте](#-о-проекте)
-- [🛠️ Сборка и запуск](#️-сборка-и-запуск)
-- [📦 Использование как библиотеки](#-использование-как-библиотеки)
-- [💾 Сохранение выгрузок](#-сохранение-выгрузок)
-- [🖼️ HTML-отчёт](#️-html-отчёт)
-- [🧮 Алгоритм Шульце](#-алгоритм-шульце)
-- [🤖 Автодополнение команд](#-автодополнение-команд)
-- [🌐 Источники данных](#-источники-данных)
-- [🧱 Статическая сборка](#-статическая-сборка)
+### Prebuilt binaries
 
-## 📚 О проекте
+Download the archive for your system from the
+[latest GitHub release](https://github.com/hexqnt/langrank/releases/latest):
 
-Приложение ориентировано на быструю сверку разных метрик популярности языков. Оно:
+| System                     | Release asset                       |
+| -------------------------- | ----------------------------------- |
+| Linux x86_64               | `langrank-linux-x86_64-gnu.tar.gz`  |
+| Linux x86_64, static build | `langrank-linux-x86_64-musl.tar.gz` |
+| Windows x86_64             | `langrank-windows-x86_64-msvc.zip`  |
+| macOS Apple Silicon        | `langrank-macos-aarch64.tar.gz`     |
 
-1. Подтягивает сводки рейтингов [TIOBE](https://www.tiobe.com/tiobe-index/), [PYPL](https://pypl.github.io/PYPL.html) и [Languish](https://tjpalmer.github.io/languish/).
-2. Нормализует названия языков и объединяет показатели.
-3. Скачивает CSV Benchmarks Game и вычисляет относительную скорость (геометрическое среднее по отношению к лучшим результатам на задачах).
-4. Считывает TechEmpower Framework Benchmarks и берёт лучший фреймворк языка по композитному score.
-5. Строит итоговую таблицу по методу Шульце, учитывая популярность и производительность.
-
-## 🛠️ Сборка и запуск
+On Linux or macOS, extract the archive and install the binary for the current user:
 
 ```bash
-# Запуск с выводом топ-10 в терминале
-cargo run --release
-
-# Подробный вывод с полным Schulze-ранжированием
-cargo run --release -- --full-output
+tar -xzf langrank-<platform>.tar.gz
+mkdir -p ~/.local/bin
+install -m 755 langrank ~/.local/bin/langrank
 ```
 
-## 📦 Использование как библиотеки
+Make sure `~/.local/bin` is in your `PATH`, then verify the installation:
 
-Пакет одновременно предоставляет CLI и библиотеку для загрузки нормализованных данных без
-привязки к конкретной базе данных. Из соседнего проекта её можно подключить по пути:
+```bash
+langrank --version
+```
+
+On Windows, extract the archive with File Explorer or PowerShell:
+
+```powershell
+Expand-Archive .\langrank-windows-x86_64-msvc.zip -DestinationPath .\langrank
+.\langrank\langrank.exe --version
+```
+
+Move `langrank.exe` to a permanent directory and add that directory to `PATH` if
+you want to run it as `langrank` from any terminal.
+
+### From source
+
+Install the [Rust toolchain](https://rustup.rs/) and Git, then let Cargo build and
+install the current version from GitHub:
+
+```bash
+cargo install --git https://github.com/hexqnt/langrank.git --locked
+langrank --version
+```
+
+Cargo installs the executable into `~/.cargo/bin` by default.
+
+## Usage
+
+Running LangRank without options fetches the latest data and prints the top 10:
+
+```bash
+langrank
+```
+
+An internet connection is required while the program fetches its source data.
+
+Print the complete ranking or see every available option:
+
+```bash
+langrank --full-output
+langrank --help
+```
+
+### Save data and reports
+
+Output flags accept an optional path. When no path is supplied, LangRank uses the
+default shown by `langrank --help`.
+
+```bash
+# Save the combined source data and final ranking as CSV
+langrank --save-rankings --save-schulze
+
+# Save a full HTML report to a custom path
+langrank --save-html report.html --full-output
+
+# Compress saved CSV files as .gz archives
+langrank --save-rankings --save-schulze --archive-csv
+```
+
+HTML is minified by default. Use `--no-minify-html` when you need readable HTML
+source.
+
+### Shell completions
+
+```bash
+# Install Bash completions for the current user
+langrank completions bash --install
+
+# Print a fish completion script to stdout
+langrank completions fish
+```
+
+## How the ranking works
+
+LangRank treats TIOBE, PYPL, Languish, and the combined performance score as four
+preference ballots. The performance score blends relative Benchmarks Game results
+with the best TechEmpower framework score available for each language. The Schulze
+method combines these ballots into the final order; a combined popularity and
+performance score breaks ties.
+
+Missing benchmark data is displayed as `-` and contributes zero to the relevant
+performance component.
+
+## Library use
+
+The repository also provides a Rust library for fetching normalized ranking data.
+Disable default features when the CLI and report-generation dependencies are not
+needed:
 
 ```toml
 [dependencies]
-anyhow = "1.0"
-langrank = { path = "../langrank", default-features = false }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+langrank = { git = "https://github.com/hexqnt/langrank.git", default-features = false }
 ```
 
-Отключение default features исключает из графа зависимостей компоненты, нужные только CLI:
-парсер аргументов, терминальные индикаторы и генерацию HTML-отчёта.
+The main entry point is `langrank::Fetcher`; individual source fetchers are also
+available for applications that need more control.
 
-`Fetcher::fetch_rankings` параллельно загружает TIOBE, PYPL и Languish. В итоговом наборе PYPL
-совокупная запись `C/C++` разделяется с учётом отдельных долей C и C++ из TIOBE.
+## Data sources
 
-```rust,no_run
-use anyhow::Result;
-use langrank::Fetcher;
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let datasets = Fetcher::new()?.fetch_rankings().await?;
-
-    for dataset in datasets {
-        let (source, entries) = dataset.into_parts();
-        for entry in entries {
-            println!("{source}: {} — {:?}", entry.lang, entry.rank);
-            // Здесь вызывающий проект может выполнить INSERT/UPSERT.
-        }
-    }
-
-    Ok(())
-}
-```
-
-Для загрузки только одного исходного рейтинга без межисточникового преобразования используйте
-`Fetcher::fetch(RankingSource::Tiobe)`. Низкоуровневые `fetch_tiobe`, `fetch_pypl`,
-`fetch_languish`, загрузчики Benchmarks Game и TechEmpower также доступны напрямую и принимают
-настроенный `reqwest::Client`. Высокоуровневые методы возвращают типизированный `FetchError`,
-по которому можно определить источник и вид сбоя.
-
-## 💾 Сохранение выгрузок
-
-Каждый флаг можно передать без пути — в этом случае используется значение по умолчанию. Добавьте `--archive-csv`, чтобы сохранять CSV в `.gz` (удобно для публикации на сайте).
-
-```bash
-# Сохраняем комбинированные рейтинги и Schulze-таблицу
-cargo run --release -- \
-  --save-rankings data/output/rankings.csv \
-  --save-schulze
-
-# Сохраняем CSV Benchmarks Game в кастомный путь
-cargo run --release -- --save-benchmarks data/raw/alldata.csv
-
-# Сохраняем CSV в gzip-архивы
-cargo run --release -- --save-rankings --save-schulze --archive-csv
-```
-
-## 🖼️ HTML-отчёт
-
-LangRank умеет генерировать красивую HTML-страницу с итоговой таблицей, которую можно раздавать статически через nginx.
-Если включён `--full-output`, в отчёт попадёт полная таблица, иначе — топ‑10.
-При использовании `--archive-csv` ссылки в HTML будут указывать на `.gz`.
-Минификация HTML включена по умолчанию; отключить её можно флагом `--no-minify-html`.
-
-```bash
-# Сохранить HTML-отчёт (по умолчанию data/output/report.html)
-cargo run --release -- --save-html
-
-# Сохранить HTML-отчёт в кастомный путь
-cargo run --release -- --save-html report.html
-
-# Полная таблица в HTML
-cargo run --release -- --save-html report.html --full-output
-
-# Отключить минификацию HTML
-cargo run --release -- --save-html report.html --no-minify-html
-```
-
-## 🧮 Алгоритм Шульце
-
-LangRank строит четыре «бюллетеня» предпочтений: по позициям в TIOBE, PYPL, Languish и по итоговому показателю Perf (объединение Benchmarks Game и TechEmpower). Затем для каждого языка вычисляется количество побед над конкурентами в матрице сильнейших путей Шульце. При равенстве используется комбинированный счёт: доли рейтингов + Perf.
-
-BG считается по данным Benchmarks Game так:
-
-$$
-\mathrm{ratio}_t = \frac{\mathrm{best\_time}_t}{\mathrm{lang\_time}_t}
-$$
-
-$$
-\mathrm{BG} = \exp\left(\frac{1}{N}\sum_{t=1}^{N} \ln(\mathrm{ratio}_t)\right)
-$$
-
-где $\mathrm{best\_time}_t$ — лучшее (минимальное) время среди всех языков на задаче $t$,
-$\mathrm{lang\_time}_t$ — время языка на этой задаче, $N$ — число задач с валидными данными.
-Значение лежит в (0, 1]: чем ближе к 1, тем быстрее относительно лучшего результата.
-
-TechEmpower (TE) считается так:
-
-1. Берём последний доступный официальный round `roundN/ph.json` (для поддерживаемых раундов `N >= 21`) со страницы
-   `https://www.techempower.com/benchmarks/results/` (round определяется из JS-бандла страницы benchmarks).
-2. Для каждого фреймворка считаем пропускную способность (RPS) по каждому тесту:
-   JSON, Plaintext, Single Query (db), Multi Query (query), Fortunes (fortune), Updates (update).
-3. Нормализуем RPS по каждому тесту, деля на максимальный RPS среди всех фреймворков в этом тесте.
-4. Считаем композитный score фреймворка с весами (TPR bias coefficients):
-   JSON=1.0, Plaintext=0.75, db=0.75, query=0.75, fortune=1.5, update=1.25.
-5. Для языка берём лучший (максимальный) score среди всех его фреймворков.
-
-Формулы:
-
-$$
-\mathrm{RPS}_{f,t} = \frac{\mathrm{total\_requests}_{f,t}}{(\mathrm{end}_t - \mathrm{start}_t)/1000}
-$$
-
-$$
-\mathrm{norm}_{f,t} = \frac{\mathrm{RPS}_{f,t}}{\max\_f \mathrm{RPS}_{f,t}}
-$$
-
-$$
-\mathrm{TE\_framework}_f = \sum_{t \in T} w_t \cdot \mathrm{norm}_{f,t}
-$$
-
-$$
-\mathrm{TE\_language} = \max_{f \in \mathrm{frameworks(language)}} \mathrm{TE\_framework}_f
-$$
-
-Если у языка нет данных TE, используется 0.
-
-Perf — объединённый показатель на основе BG и TE. TE нормализуется к диапазону 0..1, после чего берётся среднее. Если у языка нет BG или TE, соответствующий компонент считается 0 (в таблицах для BG/TE отображается «-»). Если нет ни BG, ни TE, Perf также показывается как «-».
-
-$$
-\mathrm{TE\_norm} = \frac{\mathrm{TE}}{6}
-$$
-
-$$
-\mathrm{Perf} = \frac{\mathrm{BG} + \mathrm{TE\_norm}}{2}
-$$
-
- 
-
-## 🤖 Автодополнение команд
-
-Утилита умеет генерировать скрипты автодополнения для популярных оболочек:
-
-```bash
-# Сгенерировать и установить автодополнение для Bash
-cargo run -- completions bash --install
-
-# Вывести скрипт для fish в stdout
-cargo run -- completions fish
-```
-
-## 🌐 Источники данных
-
-- 🔵 TIOBE Index — <https://www.tiobe.com/tiobe-index/>
-- 🔶 PYPL Popularity Index — <https://pypl.github.io/PYPL.html>
-- 🟢 Languish (Programming Language Trends) — <https://tjpalmer.github.io/languish/>
-- 🟥 Benchmarks Game — <https://salsa.debian.org/benchmarksgame-team/benchmarksgame/-/raw/master/public/data/alldata.csv>
-- 🟣 TechEmpower Framework Benchmarks — <https://www.techempower.com/benchmarks/>
-  и `https://www.techempower.com/benchmarks/results/round21+/ph.json`
-
-## 🧱 Статическая сборка
-
-Для сборки статического бинарника под Linux/musl используйте скрипт:
-
-```bash
-./build_musl.sh
-```
-
-Он запускает официальный контейнер `clux/muslrust:nightly` и собирает релизную версию.
+- [TIOBE Index](https://www.tiobe.com/tiobe-index/)
+- [PYPL Popularity of Programming Language](https://pypl.github.io/PYPL.html)
+- [Languish](https://tjpalmer.github.io/languish/)
+- [The Computer Language Benchmarks Game](https://benchmarksgame-team.pages.debian.net/benchmarksgame/)
+- [TechEmpower Framework Benchmarks](https://www.techempower.com/benchmarks/)
