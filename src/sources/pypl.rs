@@ -92,17 +92,14 @@ fn build_rows_table_html(raw_fragment: &str) -> String {
         if trimmed.is_empty() || trimmed == "\\" || trimmed.contains("\" + table + \"") {
             continue;
         }
-        let mut cleaned = trimmed.trim_end_matches('\\').replace("\\\"", "\"");
+        let cleaned = trimmed.trim_end_matches('\\').replace("\\\"", "\"");
         if !cleaned.starts_with("<tr") {
-            let mut wrapped = String::with_capacity(cleaned.len() + 9);
-            wrapped.push_str("<tr>");
-            wrapped.push_str(cleaned.as_str());
-            cleaned = wrapped;
+            table_html.push_str("<tr>");
         }
+        table_html.push_str(&cleaned);
         if !cleaned.ends_with("</tr>") {
-            cleaned.push_str("</tr>");
+            table_html.push_str("</tr>");
         }
-        table_html.push_str(cleaned.as_str());
     }
     table_html.push_str("</table>");
     table_html

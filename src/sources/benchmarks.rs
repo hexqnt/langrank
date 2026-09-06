@@ -2,7 +2,6 @@ use anyhow::{Context, Result, anyhow};
 use csv::StringRecord;
 use reqwest::Client;
 use rustc_hash::FxHashMap;
-use std::io::Cursor;
 use tokio::task;
 
 use super::{CanonicalLanguage, fetch_bytes_with_retry};
@@ -138,17 +137,16 @@ pub async fn load_benchmark_scores(bytes: Vec<u8>) -> Result<FxHashMap<String, f
 }
 
 fn compute_benchmark_scores_sync(data: &[u8]) -> Result<FxHashMap<String, f64>> {
-    let cursor = Cursor::new(data);
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(true)
         .flexible(true)
-        .from_reader(cursor);
+        .from_reader(data);
 
-    let headers = reader
-        .headers()
-        .context("missing CSV headers in benchmark data")?
-        .clone();
-    let columns = BenchmarkColumns::parse(&headers)?;
+    let columns = BenchmarkColumns::parse(
+        reader
+            .headers()
+            .context("missing CSV headers in benchmark data")?,
+    )?;
 
     let mut language_id_cache: FxHashMap<String, Option<LanguageId>> = FxHashMap::default();
     let mut languages = StringInterner::default();
@@ -156,8 +154,11 @@ fn compute_benchmark_scores_sync(data: &[u8]) -> Result<FxHashMap<String, f64>> 
     let mut best_by_language_task: FxHashMap<(LanguageId, TaskId), f64> = FxHashMap::default();
     let mut best_by_task: Vec<f64> = Vec::new();
 
-    for record in reader.records() {
-        let record = record.context("failed to read benchmark record")?;
+    let mut record = StringRecord::new();
+    while reader
+        .read_record(&mut record)
+        .context("failed to read benchmark record")?
+    {
         let Some(row) = BenchmarkRow::parse(&record, columns) else {
             continue;
         };

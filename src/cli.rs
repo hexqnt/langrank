@@ -140,29 +140,18 @@ fn default_install_dir(shell: Shell) -> Result<PathBuf> {
     })?;
     let mut path = PathBuf::from(home);
 
-    match shell {
-        Shell::Bash => {
-            path.push(".local/share/bash-completion/completions");
-            Ok(path)
+    let directory = match shell {
+        Shell::Bash => ".local/share/bash-completion/completions",
+        Shell::Elvish => ".elvish/lib/completions",
+        Shell::Fish => ".config/fish/completions",
+        Shell::PowerShell => ".local/share/powershell/Scripts",
+        Shell::Zsh => ".local/share/zsh/site-functions",
+        other => {
+            return Err(anyhow!(
+                "no default install location for {other:?}; specify --output-dir"
+            ));
         }
-        Shell::Elvish => {
-            path.push(".elvish/lib/completions");
-            Ok(path)
-        }
-        Shell::Fish => {
-            path.push(".config/fish/completions");
-            Ok(path)
-        }
-        Shell::PowerShell => {
-            path.push(".local/share/powershell/Scripts");
-            Ok(path)
-        }
-        Shell::Zsh => {
-            path.push(".local/share/zsh/site-functions");
-            Ok(path)
-        }
-        other => Err(anyhow!(
-            "no default install location for {other:?}; specify --output-dir"
-        )),
-    }
+    };
+    path.push(directory);
+    Ok(path)
 }

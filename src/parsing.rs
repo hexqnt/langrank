@@ -33,15 +33,11 @@ pub fn parse_percent(value: &str) -> Option<f64> {
             saw_digit = true;
         } else if matches!(ch, '.' | ',') {
             saw_decimal = true;
-        } else if matches!(ch, '-' | '\u{2212}' | '\u{2013}' | '\u{2014}') {
-            if !saw_digit && !saw_decimal {
-                sign = -1.0;
-            }
-        } else if matches!(
-            ch,
-            '+' | '%' | ' ' | '\t' | '\n' | '\r' | '\u{00a0}' | '\u{202f}'
-        ) {
-            // Ignore separators and whitespace.
+        } else if matches!(ch, '-' | '\u{2212}' | '\u{2013}' | '\u{2014}')
+            && !saw_digit
+            && !saw_decimal
+        {
+            sign = -1.0;
         }
     }
 

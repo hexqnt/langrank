@@ -74,8 +74,7 @@ impl CanonicalLanguage {
 struct AggregatedEntry {
     min_rank: Option<u32>,
     share_sum: f64,
-    trend_sum: f64,
-    trend_seen: bool,
+    trend_sum: Option<f64>,
 }
 
 async fn fetch_text_with_retry(client: &Client, url: &str) -> Result<String> {
@@ -98,11 +97,13 @@ async fn fetch_bytes_with_retry(client: &Client, url: &str) -> Result<Vec<u8>> {
 async fn send_with_retry(client: &Client, url: &str) -> Result<Response> {
     let mut last_err: Option<anyhow::Error> = None;
     for attempt in 1..=MAX_RETRIES {
-        match client.get(url).send().await {
-            Ok(response) => match response.error_for_status() {
-                Ok(success) => return Ok(success),
-                Err(err) => last_err = Some(err.into()),
-            },
+        match client
+            .get(url)
+            .send()
+            .await
+            .and_then(Response::error_for_status)
+        {
+            Ok(response) => return Ok(response),
             Err(err) => last_err = Some(err.into()),
         }
 
@@ -160,8 +161,7 @@ fn aggregate_entries(entries: Vec<RawEntry>) -> Vec<RankingEntry> {
             agg.min_rank = Some(agg.min_rank.map_or(rank, |existing| existing.min(rank)));
         }
         if let Some(trend) = trend {
-            agg.trend_sum += trend;
-            agg.trend_seen = true;
+            *agg.trend_sum.get_or_insert(0.0) += trend;
         }
     }
 
@@ -171,11 +171,7 @@ fn aggregate_entries(entries: Vec<RawEntry>) -> Vec<RankingEntry> {
             lang: lang.into_string(),
             rank: agg.min_rank,
             share: agg.share_sum,
-            trend: if agg.trend_seen {
-                Some(agg.trend_sum)
-            } else {
-                None
-            },
+            trend: agg.trend_sum,
         })
         .collect();
 
@@ -328,4 +324,31 @@ fn canonical_aliases() -> &'static FxHashMap<&'static str, &'static str> {
         .into_iter()
         .collect()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RawEntry, aggregate_entries};
+
+    #[test]
+    fn aggregation_distinguishes_missing_and_zero_trends() {
+        let entries = [
+            ("Rust", None),
+            ("Go", Some(0.5)),
+            ("golang", None),
+            ("Go", Some(-0.5)),
+        ]
+        .into_iter()
+        .map(|(lang, trend)| RawEntry::parse(lang, None, 1.0, trend).unwrap())
+        .collect();
+
+        let entries = aggregate_entries(entries);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].lang, "Go");
+        assert_eq!(entries[0].share, 3.0);
+        assert_eq!(entries[0].trend, Some(0.0));
+        assert_eq!(entries[1].lang, "Rust");
+        assert_eq!(entries[1].trend, None);
+    }
 }
