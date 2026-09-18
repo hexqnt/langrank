@@ -20,6 +20,26 @@ pub const NO_MINIFY_HTML_HELP: &str =
 pub const ARCHIVE_CSV_HELP: &str =
     "Archive saved CSV outputs into .gz files (recommended for publishing).";
 
+#[derive(Debug, Subcommand)]
+pub enum Commands {
+    /// Generate shell completion scripts, optionally installing them for the current user.
+    Completions {
+        #[arg(value_enum, help = "Shell to generate completions for.")]
+        shell: Shell,
+        #[arg(
+            long,
+            value_name = "DIR",
+            help = "Directory to write the completion script to."
+        )]
+        output_dir: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Install the completion script into the default location for the selected shell."
+        )]
+        install: bool,
+    },
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "lang_rank",
@@ -73,26 +93,6 @@ pub struct Cli {
     pub no_progress: bool,
     #[command(subcommand)]
     pub command: Option<Commands>,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum Commands {
-    /// Generate shell completion scripts, optionally installing them for the current user.
-    Completions {
-        #[arg(value_enum, help = "Shell to generate completions for.")]
-        shell: Shell,
-        #[arg(
-            long,
-            value_name = "DIR",
-            help = "Directory to write the completion script to."
-        )]
-        output_dir: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Install the completion script into the default location for the selected shell."
-        )]
-        install: bool,
-    },
 }
 
 pub fn handle_command(command: Commands) -> Result<()> {

@@ -1,5 +1,6 @@
-use crate::RankingSource;
 use thiserror::Error;
+
+use crate::RankingSource;
 
 /// Ошибка высокоуровневой загрузки рейтингов.
 #[derive(Debug, Error)]

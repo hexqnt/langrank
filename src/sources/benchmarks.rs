@@ -8,6 +8,9 @@ use super::{CanonicalLanguage, fetch_bytes_with_retry};
 
 const BENCH_URL: &str = "https://salsa.debian.org/benchmarksgame-team/benchmarksgame/-/raw/master/public/data/alldata.csv";
 
+type LanguageId = usize;
+type TaskId = usize;
+
 #[derive(Default)]
 struct StringInterner {
     ids: FxHashMap<String, usize>,
@@ -34,9 +37,6 @@ impl StringInterner {
         self.values
     }
 }
-
-type LanguageId = usize;
-type TaskId = usize;
 
 #[derive(Clone, Copy, Default)]
 struct GeometricMeanStats {
@@ -111,29 +111,6 @@ fn canonical_language_id(
         .map(|language| languages.intern(&language));
     language_id_cache.insert(raw.to_owned(), id);
     id
-}
-
-/// Загружает исходный CSV Benchmarks Game.
-///
-/// # Errors
-///
-/// Возвращает ошибку, если данные не удалось получить по HTTP.
-pub async fn download_benchmark_data(client: &Client) -> Result<Vec<u8>> {
-    fetch_bytes_with_retry(client, BENCH_URL)
-        .await
-        .context("failed to download benchmark dataset")
-}
-
-/// Вычисляет нормализованные показатели языков из CSV Benchmarks Game.
-///
-/// # Errors
-///
-/// Возвращает ошибку при некорректной структуре CSV или сбое фоновой задачи.
-pub async fn load_benchmark_scores(bytes: Vec<u8>) -> Result<FxHashMap<String, f64>> {
-    let scores = task::spawn_blocking(move || compute_benchmark_scores_sync(&bytes))
-        .await
-        .context("failed to read benchmark statistics")??;
-    Ok(scores)
 }
 
 fn compute_benchmark_scores_sync(data: &[u8]) -> Result<FxHashMap<String, f64>> {
@@ -217,6 +194,29 @@ fn compute_benchmark_scores_sync(data: &[u8]) -> Result<FxHashMap<String, f64>> 
         scores.insert("C++".to_string(), value);
     }
 
+    Ok(scores)
+}
+
+/// Загружает исходный CSV Benchmarks Game.
+///
+/// # Errors
+///
+/// Возвращает ошибку, если данные не удалось получить по HTTP.
+pub async fn download_benchmark_data(client: &Client) -> Result<Vec<u8>> {
+    fetch_bytes_with_retry(client, BENCH_URL)
+        .await
+        .context("failed to download benchmark dataset")
+}
+
+/// Вычисляет нормализованные показатели языков из CSV Benchmarks Game.
+///
+/// # Errors
+///
+/// Возвращает ошибку при некорректной структуре CSV или сбое фоновой задачи.
+pub async fn load_benchmark_scores(bytes: Vec<u8>) -> Result<FxHashMap<String, f64>> {
+    let scores = task::spawn_blocking(move || compute_benchmark_scores_sync(&bytes))
+        .await
+        .context("failed to read benchmark statistics")??;
     Ok(scores)
 }
 

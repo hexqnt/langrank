@@ -1,8 +1,9 @@
+use std::future::Future;
+use std::time::Duration;
+
 use anyhow::Result;
 use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use std::future::Future;
-use std::time::Duration;
 
 const SPINNER_TICKS_BRAILLE_COLORED: [&str; 8] = [
     "\x1b[1;96m⠁\x1b[0m",

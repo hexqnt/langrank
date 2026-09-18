@@ -1,18 +1,6 @@
-use serde::Serialize;
 use std::fmt;
 
-/// Запись рейтинга одного языка.
-#[derive(Debug, Serialize, Clone, PartialEq)]
-pub struct RankingEntry {
-    /// Каноническое имя языка программирования.
-    pub lang: String,
-    /// Позиция в исходном рейтинге, если источник её предоставляет.
-    pub rank: Option<u32>,
-    /// Доля или нормализованный показатель источника.
-    pub share: f64,
-    /// Изменение показателя, если источник его предоставляет.
-    pub trend: Option<f64>,
-}
+use serde::Serialize;
 
 /// Источник рейтинга популярности.
 #[derive(Debug, Serialize, Copy, Clone, Eq, PartialEq, Hash)]
@@ -40,6 +28,19 @@ impl fmt::Display for RankingSource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }
+}
+
+/// Запись рейтинга одного языка.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct RankingEntry {
+    /// Каноническое имя языка программирования.
+    pub lang: String,
+    /// Позиция в исходном рейтинге, если источник её предоставляет.
+    pub rank: Option<u32>,
+    /// Доля или нормализованный показатель источника.
+    pub share: f64,
+    /// Изменение показателя, если источник его предоставляет.
+    pub trend: Option<f64>,
 }
 
 /// Нормализованный набор записей из одного источника.

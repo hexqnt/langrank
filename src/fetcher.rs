@@ -1,9 +1,11 @@
+use std::time::Duration;
+
+use reqwest::Client;
+
 use crate::{
     FetchError, RankingDataset, RankingEntry, RankingSource, fetch_languish, fetch_pypl,
     fetch_tiobe, reconcile_pypl_with_tiobe,
 };
-use reqwest::Client;
-use std::time::Duration;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 const USER_AGENT: &str = "lang-rank-fetcher/0.1";
@@ -88,18 +90,6 @@ impl Fetcher {
     }
 }
 
-async fn fetch_source(
-    client: &Client,
-    source: RankingSource,
-) -> Result<Vec<RankingEntry>, FetchError> {
-    let result = match source {
-        RankingSource::Tiobe => fetch_tiobe(client).await,
-        RankingSource::Pypl => fetch_pypl(client).await,
-        RankingSource::Languish => fetch_languish(client).await,
-    };
-    result.map_err(|error| FetchError::source_failure(source, error))
-}
-
 const fn ensure_min_entries(
     source: RankingSource,
     entries: &[RankingEntry],
@@ -112,6 +102,18 @@ const fn ensure_min_entries(
         });
     }
     Ok(())
+}
+
+async fn fetch_source(
+    client: &Client,
+    source: RankingSource,
+) -> Result<Vec<RankingEntry>, FetchError> {
+    let result = match source {
+        RankingSource::Tiobe => fetch_tiobe(client).await,
+        RankingSource::Pypl => fetch_pypl(client).await,
+        RankingSource::Languish => fetch_languish(client).await,
+    };
+    result.map_err(|error| FetchError::source_failure(source, error))
 }
 
 #[cfg(test)]

@@ -1,9 +1,10 @@
+use std::path::Path;
+
 use anyhow::{Context, Result, anyhow};
 use reqwest::{Client, Url};
 use rustc_hash::{FxHashMap, FxHashSet};
 use scraper::{Html, Selector};
 use serde::Deserialize;
-use std::path::Path;
 
 use super::{CanonicalLanguage, fetch_bytes_with_retry, fetch_text_with_retry};
 
@@ -16,6 +17,20 @@ const STATIC_FALLBACK_RESULTS_URLS: [&str; 3] = [
     "https://www.techempower.com/benchmarks/results/round21/ph.json",
 ];
 
+const TESTS: [TestConfig; 6] = [
+    TestConfig::new("json", 1.0),
+    TestConfig::new("plaintext", 0.75),
+    TestConfig::new("db", 0.75),
+    TestConfig::new("query", 0.75),
+    TestConfig::new("fortune", 1.5),
+    TestConfig::new("update", 1.25),
+];
+const TEST_COUNT: usize = TESTS.len();
+
+pub const TECHEMPOWER_MAX_SCORE: f64 = total_test_weight();
+
+type RunsByFramework<'a> = FxHashMap<&'a str, Vec<BenchmarkRun>>;
+
 #[derive(Clone, Copy)]
 struct TestConfig {
     name: &'static str,
@@ -27,28 +42,6 @@ impl TestConfig {
         Self { name, weight }
     }
 }
-
-const TESTS: [TestConfig; 6] = [
-    TestConfig::new("json", 1.0),
-    TestConfig::new("plaintext", 0.75),
-    TestConfig::new("db", 0.75),
-    TestConfig::new("query", 0.75),
-    TestConfig::new("fortune", 1.5),
-    TestConfig::new("update", 1.25),
-];
-const TEST_COUNT: usize = TESTS.len();
-
-const fn total_test_weight() -> f64 {
-    let mut total = 0.0;
-    let mut index = 0;
-    while index < TEST_COUNT {
-        total += TESTS[index].weight;
-        index += 1;
-    }
-    total
-}
-
-pub const TECHEMPOWER_MAX_SCORE: f64 = total_test_weight();
 
 #[derive(Debug, Clone, Copy, Default)]
 struct FrameworkThroughput {
@@ -63,8 +56,6 @@ struct TechEmpowerResults<'a> {
     #[serde(borrow)]
     test_metadata: Vec<FrameworkMetadata<'a>>,
 }
-
-type RunsByFramework<'a> = FxHashMap<&'a str, Vec<BenchmarkRun>>;
 
 #[derive(Debug, Deserialize, Default)]
 struct BenchmarkData<'a> {
@@ -106,6 +97,16 @@ struct BenchmarkRun {
     end_time: f64,
 }
 
+impl BenchmarkRun {
+    fn requests_per_second(&self) -> Option<f64> {
+        let duration = self.end_time - self.start_time;
+        if self.total_requests <= 0.0 || duration <= 0.0 {
+            return None;
+        }
+        Some(self.total_requests / (duration / 1000.0))
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct FrameworkMetadata<'a> {
@@ -113,41 +114,14 @@ struct FrameworkMetadata<'a> {
     language: &'a str,
 }
 
-/// Загружает `TechEmpower` и вычисляет лучший показатель для каждого языка.
-///
-/// # Errors
-///
-/// Возвращает ошибку, если ни один поддерживаемый источник результатов не
-/// удалось загрузить и разобрать.
-pub async fn fetch_techempower(client: &Client) -> Result<FxHashMap<String, f64>> {
-    let fallback_urls = fallback_results_urls(client).await;
-    let mut errors: Vec<String> = Vec::new();
-
-    for results_url in fallback_urls {
-        match fetch_techempower_for_results_url(client, &results_url).await {
-            Ok(scores) => return Ok(scores),
-            Err(err) => errors.push(format!("{results_url}: {err:#}")),
-        }
+const fn total_test_weight() -> f64 {
+    let mut total = 0.0;
+    let mut index = 0;
+    while index < TEST_COUNT {
+        total += TESTS[index].weight;
+        index += 1;
     }
-
-    let summary = if errors.is_empty() {
-        "no fallback URLs were available".to_string()
-    } else {
-        errors.join(" | ")
-    };
-    Err(anyhow!(
-        "failed to fetch TechEmpower data from benchmarks results sources; errors: {summary}"
-    ))
-}
-
-async fn fetch_techempower_for_results_url(
-    client: &Client,
-    results_url: &str,
-) -> Result<FxHashMap<String, f64>> {
-    let bytes = fetch_bytes_with_retry(client, results_url)
-        .await
-        .with_context(|| format!("failed to download TechEmpower results from {results_url}"))?;
-    parse_techempower_results(&bytes)
+    total
 }
 
 fn parse_techempower_results(bytes: &[u8]) -> Result<FxHashMap<String, f64>> {
@@ -170,38 +144,6 @@ fn resolve_url(base_url: &str, href: &str) -> String {
     } else {
         format!("{base_url}/{href}")
     }
-}
-
-async fn fallback_results_urls(client: &Client) -> Vec<String> {
-    let mut urls = discover_fallback_results_urls(client)
-        .await
-        .unwrap_or_default();
-
-    for url in STATIC_FALLBACK_RESULTS_URLS {
-        urls.push(url.to_string());
-    }
-
-    urls = dedup_urls_preserve_order(urls);
-    urls.truncate(MAX_FALLBACK_RESULTS_URLS);
-    urls
-}
-
-async fn discover_fallback_results_urls(client: &Client) -> Result<Vec<String>> {
-    let html = fetch_text_with_retry(client, TFB_BENCHMARKS_URL)
-        .await
-        .context("failed to fetch TechEmpower benchmarks page for fallback discovery")?;
-    let bundle_url = benchmarks_bundle_url(&html)
-        .ok_or_else(|| anyhow!("unable to locate benchmarks JS bundle for fallback discovery"))?;
-    let bundle = fetch_text_with_retry(client, &bundle_url)
-        .await
-        .with_context(|| format!("failed to fetch TechEmpower benchmarks bundle {bundle_url}"))?;
-    let urls = extract_round_results_urls(&bundle);
-    if urls.is_empty() {
-        return Err(anyhow!(
-            "no fallback URLs found in TechEmpower benchmarks bundle"
-        ));
-    }
-    Ok(urls)
 }
 
 fn benchmarks_bundle_url(html: &str) -> Option<String> {
@@ -330,14 +272,73 @@ fn map_framework_languages<'a>(metadata: &[FrameworkMetadata<'a>]) -> FxHashMap<
     map
 }
 
-impl BenchmarkRun {
-    fn requests_per_second(&self) -> Option<f64> {
-        let duration = self.end_time - self.start_time;
-        if self.total_requests <= 0.0 || duration <= 0.0 {
-            return None;
+/// Загружает `TechEmpower` и вычисляет лучший показатель для каждого языка.
+///
+/// # Errors
+///
+/// Возвращает ошибку, если ни один поддерживаемый источник результатов не
+/// удалось загрузить и разобрать.
+pub async fn fetch_techempower(client: &Client) -> Result<FxHashMap<String, f64>> {
+    let fallback_urls = fallback_results_urls(client).await;
+    let mut errors: Vec<String> = Vec::new();
+
+    for results_url in fallback_urls {
+        match fetch_techempower_for_results_url(client, &results_url).await {
+            Ok(scores) => return Ok(scores),
+            Err(err) => errors.push(format!("{results_url}: {err:#}")),
         }
-        Some(self.total_requests / (duration / 1000.0))
     }
+
+    let summary = if errors.is_empty() {
+        "no fallback URLs were available".to_string()
+    } else {
+        errors.join(" | ")
+    };
+    Err(anyhow!(
+        "failed to fetch TechEmpower data from benchmarks results sources; errors: {summary}"
+    ))
+}
+
+async fn fetch_techempower_for_results_url(
+    client: &Client,
+    results_url: &str,
+) -> Result<FxHashMap<String, f64>> {
+    let bytes = fetch_bytes_with_retry(client, results_url)
+        .await
+        .with_context(|| format!("failed to download TechEmpower results from {results_url}"))?;
+    parse_techempower_results(&bytes)
+}
+
+async fn fallback_results_urls(client: &Client) -> Vec<String> {
+    let mut urls = discover_fallback_results_urls(client)
+        .await
+        .unwrap_or_default();
+
+    for url in STATIC_FALLBACK_RESULTS_URLS {
+        urls.push(url.to_string());
+    }
+
+    urls = dedup_urls_preserve_order(urls);
+    urls.truncate(MAX_FALLBACK_RESULTS_URLS);
+    urls
+}
+
+async fn discover_fallback_results_urls(client: &Client) -> Result<Vec<String>> {
+    let html = fetch_text_with_retry(client, TFB_BENCHMARKS_URL)
+        .await
+        .context("failed to fetch TechEmpower benchmarks page for fallback discovery")?;
+    let bundle_url = benchmarks_bundle_url(&html)
+        .ok_or_else(|| anyhow!("unable to locate benchmarks JS bundle for fallback discovery"))?;
+    let bundle = fetch_text_with_retry(client, &bundle_url)
+        .await
+        .with_context(|| format!("failed to fetch TechEmpower benchmarks bundle {bundle_url}"))?;
+    let urls = extract_round_results_urls(&bundle);
+    if urls.is_empty() {
+        return Err(anyhow!(
+            "no fallback URLs found in TechEmpower benchmarks bundle"
+        ));
+    }
+    Ok(urls)
 }
 
 #[cfg(test)]

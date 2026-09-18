@@ -1,10 +1,12 @@
+use std::path::Path;
+
+use chrono::{DateTime, Local};
+use colored::Colorize;
+
 use crate::formatting::{
     format_optional_float, format_optional_rank, format_perf_score, format_trend,
 };
 use crate::schulze::SchulzeRecord;
-use chrono::{DateTime, Local};
-use colored::Colorize;
-use std::path::Path;
 
 pub struct SummaryPaths<'a> {
     pub(crate) benchmarks: Option<&'a Path>,

@@ -1,9 +1,10 @@
-use crate::RankingEntry;
+use std::sync::OnceLock;
+
 use anyhow::{Context, Result};
 use reqwest::Client;
 use scraper::{Html, Selector};
-use std::sync::OnceLock;
 
+use crate::RankingEntry;
 use super::{
     RawEntry, aggregate_entries, extract_cell_text, fetch_text_with_retry, parse_percent, parse_u32,
 };
@@ -66,18 +67,6 @@ impl<'a> OtherRow<'a> {
     }
 }
 
-/// Загружает и разбирает актуальный индекс TIOBE.
-///
-/// # Errors
-///
-/// Возвращает ошибку, если страницу не удалось получить по HTTP.
-pub async fn fetch_tiobe(client: &Client) -> Result<Vec<RankingEntry>> {
-    let body = fetch_text_with_retry(client, TIOBE_URL)
-        .await
-        .context("failed to download TIOBE index")?;
-    Ok(parse_tiobe_html(body.as_str()))
-}
-
 fn parse_tiobe_html(body: &str) -> Vec<RankingEntry> {
     let document = Html::parse_document(body);
     let mut entries = Vec::new();
@@ -126,6 +115,18 @@ fn row_selector() -> &'static Selector {
 fn cell_selector() -> &'static Selector {
     static SELECTOR: OnceLock<Selector> = OnceLock::new();
     SELECTOR.get_or_init(|| Selector::parse("td").expect("TIOBE cell selector is valid"))
+}
+
+/// Загружает и разбирает актуальный индекс TIOBE.
+///
+/// # Errors
+///
+/// Возвращает ошибку, если страницу не удалось получить по HTTP.
+pub async fn fetch_tiobe(client: &Client) -> Result<Vec<RankingEntry>> {
+    let body = fetch_text_with_retry(client, TIOBE_URL)
+        .await
+        .context("failed to download TIOBE index")?;
+    Ok(parse_tiobe_html(body.as_str()))
 }
 
 #[cfg(test)]

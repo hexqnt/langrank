@@ -18,12 +18,6 @@
 //! }
 //! ```
 
-mod error;
-mod fetcher;
-mod parsing;
-mod ranking;
-mod sources;
-
 pub use error::FetchError;
 pub use fetcher::{Fetcher, MIN_RANKING_ENTRIES};
 pub use ranking::{RankingDataset, RankingEntry, RankingSource, reconcile_pypl_with_tiobe};
@@ -31,3 +25,10 @@ pub use sources::{
     TECHEMPOWER_MAX_SCORE, download_benchmark_data, fetch_languish, fetch_pypl, fetch_techempower,
     fetch_tiobe, load_benchmark_scores,
 };
+
+mod error;
+mod fetcher;
+mod parsing;
+mod ranking;
+mod sources;
+

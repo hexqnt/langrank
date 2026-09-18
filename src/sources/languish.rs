@@ -1,4 +1,5 @@
-use crate::RankingEntry;
+use std::sync::OnceLock;
+
 use anyhow::{Context, Result, anyhow};
 use memchr::memchr;
 use reqwest::Client;
@@ -6,11 +7,19 @@ use rustc_hash::FxHashMap;
 use scraper::{Html, Selector};
 use serde::Deserialize;
 use serde_json::Value;
-use std::sync::OnceLock;
 
+use crate::RankingEntry;
 use super::{RawEntry, aggregate_entries, fetch_text_with_retry};
 
 const LANGUISH_INDEX_URL: &str = "https://tjpalmer.github.io/languish/";
+
+// В отличие от Languish учитываем все четыре сигнала с одинаковым весом.
+const CORE_WEIGHTS: CoreWeights = CoreWeights {
+    issues: 1.0,
+    pulls: 1.0,
+    so_questions: 1.0,
+    stars: 1.0,
+};
 
 #[derive(Debug, Deserialize)]
 struct Table {
@@ -32,36 +41,63 @@ struct CoreWeights {
     stars: f64,
 }
 
-// В отличие от Languish учитываем все четыре сигнала с одинаковым весом.
-const CORE_WEIGHTS: CoreWeights = CoreWeights {
-    issues: 1.0,
-    pulls: 1.0,
-    so_questions: 1.0,
-    stars: 1.0,
-};
-
 impl CoreWeights {
     const fn total(self) -> f64 {
         self.issues + self.pulls + self.so_questions + self.stars
     }
 }
 
-/// Загружает и разбирает актуальный рейтинг Languish.
-///
-/// # Errors
-///
-/// Возвращает ошибку при сбое HTTP-запроса или несовместимом формате данных.
-pub async fn fetch_languish(client: &Client) -> Result<Vec<RankingEntry>> {
-    let index_html = fetch_text_with_retry(client, LANGUISH_INDEX_URL)
-        .await
-        .context("failed to download Languish index page")?;
-    let main_js_url = extract_main_js_url(&index_html)
-        .ok_or_else(|| anyhow!("failed to locate Languish main chunk script"))?;
+#[derive(Default, Clone, Copy)]
+struct Metrics {
+    issues: f64,
+    pulls: f64,
+    so_questions: f64,
+    stars: f64,
+}
 
-    let js_body = fetch_text_with_retry(client, &main_js_url)
-        .await
-        .with_context(|| format!("failed to download Languish JS bundle: {main_js_url}"))?;
-    parse_languish_bundle(&js_body)
+#[derive(Clone, Copy)]
+struct MetricColumns {
+    date: usize,
+    issues: usize,
+    pulls: usize,
+    so_questions: usize,
+    stars: usize,
+}
+
+#[derive(Clone, Copy)]
+struct ItemColumns {
+    name: usize,
+    metrics: MetricColumns,
+}
+
+#[derive(Clone, Copy)]
+struct MetricsRow<'a> {
+    date: &'a str,
+    metrics: Metrics,
+}
+
+#[derive(Clone, Copy)]
+struct ItemRow<'a> {
+    name: &'a str,
+    date: &'a str,
+    metrics: Metrics,
+}
+
+#[derive(Clone, Copy)]
+struct QuarterSnapshot<'a> {
+    date: &'a str,
+    metrics: Metrics,
+}
+
+struct RecentQuarters<'a> {
+    latest: QuarterSnapshot<'a>,
+    previous: Option<QuarterSnapshot<'a>>,
+}
+
+#[derive(Default)]
+struct RecentMetrics {
+    latest: Option<Metrics>,
+    previous: Option<Metrics>,
 }
 
 fn parse_languish_bundle(js_body: &str) -> Result<Vec<RankingEntry>> {
@@ -212,53 +248,6 @@ const fn hex_value(byte: u8) -> u8 {
     }
 }
 
-#[derive(Default, Clone, Copy)]
-struct Metrics {
-    issues: f64,
-    pulls: f64,
-    so_questions: f64,
-    stars: f64,
-}
-
-#[derive(Clone, Copy)]
-struct MetricColumns {
-    date: usize,
-    issues: usize,
-    pulls: usize,
-    so_questions: usize,
-    stars: usize,
-}
-
-#[derive(Clone, Copy)]
-struct ItemColumns {
-    name: usize,
-    metrics: MetricColumns,
-}
-
-#[derive(Clone, Copy)]
-struct MetricsRow<'a> {
-    date: &'a str,
-    metrics: Metrics,
-}
-
-#[derive(Clone, Copy)]
-struct ItemRow<'a> {
-    name: &'a str,
-    date: &'a str,
-    metrics: Metrics,
-}
-
-#[derive(Clone, Copy)]
-struct QuarterSnapshot<'a> {
-    date: &'a str,
-    metrics: Metrics,
-}
-
-struct RecentQuarters<'a> {
-    latest: QuarterSnapshot<'a>,
-    previous: Option<QuarterSnapshot<'a>>,
-}
-
 fn parse_languish_tables(js: &str) -> Result<LanguishData> {
     serde_json::from_str(js).context("failed to parse decoded Languish JSON object")
 }
@@ -345,12 +334,6 @@ fn parse_item_row(row: &[Value], columns: ItemColumns) -> Option<ItemRow<'_>> {
     })
 }
 
-#[derive(Default)]
-struct RecentMetrics {
-    latest: Option<Metrics>,
-    previous: Option<Metrics>,
-}
-
 fn build_recent_metrics<'a>(
     items: &'a Table,
     latest: &str,
@@ -407,6 +390,24 @@ fn mean_percent(
     }
 
     weighted_sum * (100.0 / total_weight)
+}
+
+/// Загружает и разбирает актуальный рейтинг Languish.
+///
+/// # Errors
+///
+/// Возвращает ошибку при сбое HTTP-запроса или несовместимом формате данных.
+pub async fn fetch_languish(client: &Client) -> Result<Vec<RankingEntry>> {
+    let index_html = fetch_text_with_retry(client, LANGUISH_INDEX_URL)
+        .await
+        .context("failed to download Languish index page")?;
+    let main_js_url = extract_main_js_url(&index_html)
+        .ok_or_else(|| anyhow!("failed to locate Languish main chunk script"))?;
+
+    let js_body = fetch_text_with_retry(client, &main_js_url)
+        .await
+        .with_context(|| format!("failed to download Languish JS bundle: {main_js_url}"))?;
+    parse_languish_bundle(&js_body)
 }
 
 #[cfg(test)]

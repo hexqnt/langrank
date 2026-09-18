@@ -1,8 +1,6 @@
-use crate::cli::Cli;
-use crate::progress::{ProgressState, Stage, run_with_spinner};
-use crate::report::{HtmlReportContext, HtmlReportPaths, save_html_report};
-use crate::schulze::{SchulzeConfig, SchulzeRecord, compute_schulze_records};
-use crate::summary::{SummaryContext, SummaryPaths, print_summary};
+use std::io::{IsTerminal, Write};
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result, anyhow};
 use chrono::Local;
 use clap::Parser;
@@ -15,9 +13,13 @@ use langrank::{
     load_benchmark_scores, reconcile_pypl_with_tiobe,
 };
 use serde::Serialize;
-use std::io::{IsTerminal, Write};
-use std::path::{Path, PathBuf};
 use tokio::fs;
+
+use crate::cli::Cli;
+use crate::progress::{ProgressState, Stage, run_with_spinner};
+use crate::report::{HtmlReportContext, HtmlReportPaths, save_html_report};
+use crate::schulze::{SchulzeConfig, SchulzeRecord, compute_schulze_records};
+use crate::summary::{SummaryContext, SummaryPaths, print_summary};
 
 mod cli;
 mod formatting;
@@ -30,6 +32,79 @@ const MIN_BENCHMARK_LANGUAGES: usize = 10;
 const MIN_TECHEMPOWER_LANGUAGES: usize = 10;
 const MIN_SOURCE_OVERLAP: usize = 3;
 const MAX_RANKED_LANGUAGES: usize = 0;
+
+#[derive(Debug, Serialize)]
+struct CsvRecord<'a> {
+    source: RankingSource,
+    lang: &'a str,
+    rank: Option<u32>,
+    share: f64,
+    trend: Option<f64>,
+}
+
+fn archive_output_path(path: &Path) -> PathBuf {
+    if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("gz"))
+    {
+        return path.to_path_buf();
+    }
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".gz");
+    PathBuf::from(name)
+}
+
+fn gzip_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(bytes)
+        .context("failed to write gzip data")?;
+    encoder.finish().context("failed to finalize gzip data")
+}
+
+fn finalize_writer(mut writer: Writer<Vec<u8>>, label: &str) -> Result<Vec<u8>> {
+    writer
+        .flush()
+        .with_context(|| format!("failed to flush {label}"))?;
+    writer
+        .into_inner()
+        .with_context(|| format!("failed to finalize {label}"))
+}
+
+fn should_use_color() -> bool {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    std::io::stdout().is_terminal()
+}
+
+fn ensure_min_entries(label: &str, count: usize, min: usize) -> Result<()> {
+    if count < min {
+        return Err(anyhow!(
+            "{label} returned {count} entries (expected at least {min}); the source format may have changed."
+        ));
+    }
+    Ok(())
+}
+
+fn serialize_rankings(sources: &[(RankingSource, &[RankingEntry])]) -> Result<Vec<u8>> {
+    let mut writer = Writer::from_writer(Vec::new());
+    for (source, entries) in sources {
+        for entry in *entries {
+            let record = CsvRecord {
+                source: *source,
+                lang: entry.lang.as_str(),
+                rank: entry.rank,
+                share: entry.share,
+                trend: entry.trend,
+            };
+            writer
+                .serialize(record)
+                .context("failed to serialize ranking record")?;
+        }
+    }
+    finalize_writer(writer, "ranking CSV writer")
+}
 
 #[allow(clippy::too_many_lines)]
 #[tokio::main]
@@ -248,51 +323,6 @@ async fn write_csv_output(path: &Path, bytes: &[u8], archive: bool) -> Result<Pa
     }
 }
 
-fn archive_output_path(path: &Path) -> PathBuf {
-    if path
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("gz"))
-    {
-        return path.to_path_buf();
-    }
-    let mut name = path.as_os_str().to_os_string();
-    name.push(".gz");
-    PathBuf::from(name)
-}
-
-fn gzip_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder
-        .write_all(bytes)
-        .context("failed to write gzip data")?;
-    encoder.finish().context("failed to finalize gzip data")
-}
-
-fn finalize_writer(mut writer: Writer<Vec<u8>>, label: &str) -> Result<Vec<u8>> {
-    writer
-        .flush()
-        .with_context(|| format!("failed to flush {label}"))?;
-    writer
-        .into_inner()
-        .with_context(|| format!("failed to finalize {label}"))
-}
-
-fn should_use_color() -> bool {
-    if std::env::var_os("NO_COLOR").is_some() {
-        return false;
-    }
-    std::io::stdout().is_terminal()
-}
-
-fn ensure_min_entries(label: &str, count: usize, min: usize) -> Result<()> {
-    if count < min {
-        return Err(anyhow!(
-            "{label} returned {count} entries (expected at least {min}); the source format may have changed."
-        ));
-    }
-    Ok(())
-}
-
 async fn save_rankings_csv(
     path: &Path,
     sources: &[(RankingSource, &[RankingEntry])],
@@ -300,34 +330,6 @@ async fn save_rankings_csv(
 ) -> Result<PathBuf> {
     let serialized = serialize_rankings(sources)?;
     write_csv_output(path, &serialized, archive).await
-}
-
-fn serialize_rankings(sources: &[(RankingSource, &[RankingEntry])]) -> Result<Vec<u8>> {
-    let mut writer = Writer::from_writer(Vec::new());
-    for (source, entries) in sources {
-        for entry in *entries {
-            let record = CsvRecord {
-                source: *source,
-                lang: entry.lang.as_str(),
-                rank: entry.rank,
-                share: entry.share,
-                trend: entry.trend,
-            };
-            writer
-                .serialize(record)
-                .context("failed to serialize ranking record")?;
-        }
-    }
-    finalize_writer(writer, "ranking CSV writer")
-}
-
-#[derive(Debug, Serialize)]
-struct CsvRecord<'a> {
-    source: RankingSource,
-    lang: &'a str,
-    rank: Option<u32>,
-    share: f64,
-    trend: Option<f64>,
 }
 
 async fn save_schulze_csv(

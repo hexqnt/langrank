@@ -1,9 +1,14 @@
+use std::cmp::Ordering;
+
 use anyhow::{Result, anyhow};
 use langrank::RankingEntry;
 use ndarray::{Array2, Zip};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
-use std::cmp::Ordering;
+
+const SOURCE_BALLOT_COUNT: usize = 4;
+
+type Ballots = [Vec<usize>; SOURCE_BALLOT_COUNT];
 
 #[derive(Debug, Serialize)]
 pub struct SchulzeRecord {
@@ -29,37 +34,6 @@ pub struct SchulzeConfig {
     pub min_source_overlap: usize,
     pub max_ranked_languages: usize,
     pub techempower_max_score: f64,
-}
-
-pub fn compute_schulze_records(
-    tiobe: &[RankingEntry],
-    pypl: &[RankingEntry],
-    languish: &[RankingEntry],
-    benchmark: &FxHashMap<String, f64>,
-    techempower: &FxHashMap<String, f64>,
-    config: SchulzeConfig,
-) -> Result<Vec<SchulzeRecord>> {
-    let sources = RankingSources::new(tiobe, pypl, languish, benchmark, techempower, config);
-    let languages = collect_language_names(&sources, config.min_source_overlap);
-    let candidates = build_candidates(languages, &sources);
-    let candidates = limit_candidates(candidates, config.max_ranked_languages);
-
-    if candidates.len() < 2 {
-        return Err(anyhow!(
-            "Not enough overlapping languages ({}) to compute Schulze ranking",
-            candidates.len()
-        ));
-    }
-
-    let ballots = build_ballots(&candidates);
-    let preference_strengths = build_preference_matrix(candidates.len(), &ballots);
-    let ranked_indices = rank_languages(&candidates, &preference_strengths);
-
-    Ok(build_records(
-        &candidates,
-        &ranked_indices,
-        &preference_strengths,
-    ))
 }
 
 struct RankingSource<'a> {
@@ -189,6 +163,37 @@ impl<'a> LanguageCandidate<'a> {
     }
 }
 
+pub fn compute_schulze_records(
+    tiobe: &[RankingEntry],
+    pypl: &[RankingEntry],
+    languish: &[RankingEntry],
+    benchmark: &FxHashMap<String, f64>,
+    techempower: &FxHashMap<String, f64>,
+    config: SchulzeConfig,
+) -> Result<Vec<SchulzeRecord>> {
+    let sources = RankingSources::new(tiobe, pypl, languish, benchmark, techempower, config);
+    let languages = collect_language_names(&sources, config.min_source_overlap);
+    let candidates = build_candidates(languages, &sources);
+    let candidates = limit_candidates(candidates, config.max_ranked_languages);
+
+    if candidates.len() < 2 {
+        return Err(anyhow!(
+            "Not enough overlapping languages ({}) to compute Schulze ranking",
+            candidates.len()
+        ));
+    }
+
+    let ballots = build_ballots(&candidates);
+    let preference_strengths = build_preference_matrix(candidates.len(), &ballots);
+    let ranked_indices = rank_languages(&candidates, &preference_strengths);
+
+    Ok(build_records(
+        &candidates,
+        &ranked_indices,
+        &preference_strengths,
+    ))
+}
+
 fn build_ranking_index(entries: &[RankingEntry]) -> FxHashMap<&str, usize> {
     entries
         .iter()
@@ -291,10 +296,6 @@ fn compare_candidate_scores(
         .then_with(|| right.perf_score.total_cmp(&left.perf_score))
         .then_with(|| left.lang().cmp(right.lang()))
 }
-
-const SOURCE_BALLOT_COUNT: usize = 4;
-
-type Ballots = [Vec<usize>; SOURCE_BALLOT_COUNT];
 
 fn build_ballots(candidates: &[LanguageCandidate<'_>]) -> Ballots {
     [

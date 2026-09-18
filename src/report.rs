@@ -1,13 +1,33 @@
+use std::path::Path;
+
+use anyhow::Result;
+use chrono::{DateTime, Local, SecondsFormat};
+use maud::{DOCTYPE, Markup, PreEscaped, html};
+use minify_html::{Cfg, minify};
+
 use crate::formatting::{
     format_optional_float, format_optional_rank, format_perf_score, format_trend_with_class,
 };
 use crate::schulze::SchulzeRecord;
 use crate::write_output_file;
-use anyhow::Result;
-use chrono::{DateTime, Local, SecondsFormat};
-use maud::{DOCTYPE, Markup, PreEscaped, html};
-use minify_html::{Cfg, minify};
-use std::path::Path;
+
+const GITHUB_REPO_URL: &str = "https://github.com/hexqnt/langrank";
+const SCHULZE_METHOD_URL: &str = "https://en.wikipedia.org/wiki/Schulze_method";
+const CDN_FONTS_GOOGLEAPIS: &str = "https://fonts.googleapis.com";
+const CDN_FONTS_GSTATIC: &str = "https://fonts.gstatic.com";
+const CDN_FONTS_STYLESHEET: &str = "https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@400;500;600&display=swap";
+const REPORT_URL: &str = "https://langrank.hexq.ru/";
+const SITEMAP_FILE_NAME: &str = "sitemap.xml";
+const ROBOTS_FILE_NAME: &str = "robots.txt";
+const REPORT_DESCRIPTION: &str = "LangRank report ranks programming languages using the Schulze method, blending popularity and performance data from major indexes.";
+const REPORT_KEYWORDS: &str = "programming languages, ranking, Schulze method, TIOBE, PYPL, Languish, Benchmarks Game, TechEmpower, performance metrics";
+const REPORT_FAVICON: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23f6f3ec'/%3E%3Ccircle cx='32' cy='32' r='20' fill='%23e07a5f'/%3E%3Ctext x='32' y='38' text-anchor='middle' font-family='sans-serif' font-size='20' fill='%23ffffff'%3ELR%3C/text%3E%3C/svg%3E";
+
+const REPORT_STYLE: &str = include_str!("report/style.css");
+const THEME_BOOTSTRAP_SCRIPT: &str = include_str!("report/theme-bootstrap.js");
+const REPORT_SCRIPT: &str = include_str!("report/script.js");
+
+const GITHUB_SVG: &str = r#"<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.53 2.87 8.38 6.84 9.74.5.1.68-.22.68-.48 0-.24-.01-.86-.01-1.7-2.78.62-3.37-1.38-3.37-1.38-.45-1.18-1.1-1.5-1.1-1.5-.9-.64.07-.63.07-.63 1 .07 1.52 1.05 1.52 1.05.9 1.57 2.36 1.12 2.94.86.09-.67.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.04 1.03-2.76-.1-.26-.45-1.3.1-2.72 0 0 .84-.27 2.75 1.03a9.28 9.28 0 0 1 2.5-.35c.85 0 1.7.12 2.5.35 1.9-1.3 2.74-1.03 2.74-1.03.56 1.42.2 2.46.1 2.72.64.72 1.03 1.64 1.03 2.76 0 3.94-2.34 4.8-4.57 5.06.36.32.68.95.68 1.92 0 1.38-.01 2.49-.01 2.83 0 .26.18.58.69.48A10.07 10.07 0 0 0 22 12.26C22 6.58 17.52 2 12 2z"/></svg>"#;
 
 pub struct HtmlReportPaths<'a> {
     pub(crate) benchmarks: Option<&'a Path>,
@@ -27,27 +47,6 @@ pub struct HtmlReportContext<'a> {
     pub(crate) archive_csv: bool,
     pub(crate) paths: HtmlReportPaths<'a>,
     pub(crate) output_path: &'a Path,
-}
-
-pub async fn save_html_report(
-    output_path: &Path,
-    context: &HtmlReportContext<'_>,
-    minify_html: bool,
-) -> Result<()> {
-    let html = render_html_report(context);
-    if minify_html {
-        let cfg = Cfg::new();
-        let minified = minify(html.as_bytes(), &cfg);
-        write_output_file(output_path, &minified).await?;
-    } else {
-        write_output_file(output_path, html.as_bytes()).await?;
-    }
-
-    let output_dir = output_path.parent().unwrap_or_else(|| Path::new(""));
-    let sitemap = render_sitemap(context.run_started_at);
-    let robots = render_robots();
-    write_output_file(&output_dir.join(SITEMAP_FILE_NAME), sitemap.as_bytes()).await?;
-    write_output_file(&output_dir.join(ROBOTS_FILE_NAME), robots.as_bytes()).await
 }
 
 fn render_sitemap(generated_at: &DateTime<Local>) -> String {
@@ -505,23 +504,26 @@ fn relative_link(html_path: &Path, target: &Path) -> Option<String> {
     }
 }
 
-const GITHUB_REPO_URL: &str = "https://github.com/hexqnt/langrank";
-const SCHULZE_METHOD_URL: &str = "https://en.wikipedia.org/wiki/Schulze_method";
-const CDN_FONTS_GOOGLEAPIS: &str = "https://fonts.googleapis.com";
-const CDN_FONTS_GSTATIC: &str = "https://fonts.gstatic.com";
-const CDN_FONTS_STYLESHEET: &str = "https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@400;500;600&display=swap";
-const REPORT_URL: &str = "https://langrank.hexq.ru/";
-const SITEMAP_FILE_NAME: &str = "sitemap.xml";
-const ROBOTS_FILE_NAME: &str = "robots.txt";
-const REPORT_DESCRIPTION: &str = "LangRank report ranks programming languages using the Schulze method, blending popularity and performance data from major indexes.";
-const REPORT_KEYWORDS: &str = "programming languages, ranking, Schulze method, TIOBE, PYPL, Languish, Benchmarks Game, TechEmpower, performance metrics";
-const REPORT_FAVICON: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23f6f3ec'/%3E%3Ccircle cx='32' cy='32' r='20' fill='%23e07a5f'/%3E%3Ctext x='32' y='38' text-anchor='middle' font-family='sans-serif' font-size='20' fill='%23ffffff'%3ELR%3C/text%3E%3C/svg%3E";
+pub async fn save_html_report(
+    output_path: &Path,
+    context: &HtmlReportContext<'_>,
+    minify_html: bool,
+) -> Result<()> {
+    let html = render_html_report(context);
+    if minify_html {
+        let cfg = Cfg::new();
+        let minified = minify(html.as_bytes(), &cfg);
+        write_output_file(output_path, &minified).await?;
+    } else {
+        write_output_file(output_path, html.as_bytes()).await?;
+    }
 
-const REPORT_STYLE: &str = include_str!("report/style.css");
-const THEME_BOOTSTRAP_SCRIPT: &str = include_str!("report/theme-bootstrap.js");
-const REPORT_SCRIPT: &str = include_str!("report/script.js");
-
-const GITHUB_SVG: &str = r#"<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.53 2.87 8.38 6.84 9.74.5.1.68-.22.68-.48 0-.24-.01-.86-.01-1.7-2.78.62-3.37-1.38-3.37-1.38-.45-1.18-1.1-1.5-1.1-1.5-.9-.64.07-.63.07-.63 1 .07 1.52 1.05 1.52 1.05.9 1.57 2.36 1.12 2.94.86.09-.67.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.04 1.03-2.76-.1-.26-.45-1.3.1-2.72 0 0 .84-.27 2.75 1.03a9.28 9.28 0 0 1 2.5-.35c.85 0 1.7.12 2.5.35 1.9-1.3 2.74-1.03 2.74-1.03.56 1.42.2 2.46.1 2.72.64.72 1.03 1.64 1.03 2.76 0 3.94-2.34 4.8-4.57 5.06.36.32.68.95.68 1.92 0 1.38-.01 2.49-.01 2.83 0 .26.18.58.69.48A10.07 10.07 0 0 0 22 12.26C22 6.58 17.52 2 12 2z"/></svg>"#;
+    let output_dir = output_path.parent().unwrap_or_else(|| Path::new(""));
+    let sitemap = render_sitemap(context.run_started_at);
+    let robots = render_robots();
+    write_output_file(&output_dir.join(SITEMAP_FILE_NAME), sitemap.as_bytes()).await?;
+    write_output_file(&output_dir.join(ROBOTS_FILE_NAME), robots.as_bytes()).await
+}
 
 #[cfg(test)]
 mod tests {

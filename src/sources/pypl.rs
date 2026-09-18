@@ -1,9 +1,10 @@
-use crate::RankingEntry;
+use std::sync::OnceLock;
+
 use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
 use scraper::{Html, Selector};
-use std::sync::OnceLock;
 
+use crate::RankingEntry;
 use super::{
     RawEntry, aggregate_entries, extract_cell_text, fetch_text_with_retry, parse_percent, parse_u32,
 };
@@ -38,18 +39,6 @@ impl<'a> PyplRow<'a> {
             parse_percent(self.trend),
         )
     }
-}
-
-/// Загружает и разбирает актуальный рейтинг PYPL.
-///
-/// # Errors
-///
-/// Возвращает ошибку при сбое HTTP-запроса или несовместимом формате данных.
-pub async fn fetch_pypl(client: &Client) -> Result<Vec<RankingEntry>> {
-    let body = fetch_text_with_retry(client, PYPL_URL)
-        .await
-        .context("failed to download PYPL index")?;
-    parse_pypl(body.as_str())
 }
 
 fn parse_pypl(body: &str) -> Result<Vec<RankingEntry>> {
@@ -113,6 +102,18 @@ fn cell_selector() -> &'static Selector {
 fn row_selector() -> &'static Selector {
     static SELECTOR: OnceLock<Selector> = OnceLock::new();
     SELECTOR.get_or_init(|| Selector::parse("tr").expect("PYPL row selector is valid"))
+}
+
+/// Загружает и разбирает актуальный рейтинг PYPL.
+///
+/// # Errors
+///
+/// Возвращает ошибку при сбое HTTP-запроса или несовместимом формате данных.
+pub async fn fetch_pypl(client: &Client) -> Result<Vec<RankingEntry>> {
+    let body = fetch_text_with_retry(client, PYPL_URL)
+        .await
+        .context("failed to download PYPL index")?;
+    parse_pypl(body.as_str())
 }
 
 #[cfg(test)]

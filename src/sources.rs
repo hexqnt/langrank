@@ -1,8 +1,15 @@
-mod benchmarks;
-mod languish;
-mod pypl;
-mod techempower;
-mod tiobe;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use anyhow::{Context, Result, anyhow};
+use reqwest::{Client, Response};
+use rustc_hash::FxHashMap;
+use scraper::ElementRef;
+use tokio::time::sleep;
+
+use crate::RankingEntry;
+use crate::parsing::{parse_percent, parse_u32};
+use raw_entry::RawEntry;
 
 pub use benchmarks::{download_benchmark_data, load_benchmark_scores};
 pub use languish::fetch_languish;
@@ -10,17 +17,11 @@ pub use pypl::fetch_pypl;
 pub use techempower::{TECHEMPOWER_MAX_SCORE, fetch_techempower};
 pub use tiobe::fetch_tiobe;
 
-use crate::RankingEntry;
-use crate::parsing::{parse_percent, parse_u32};
-use anyhow::{Context, Result, anyhow};
-use reqwest::{Client, Response};
-use rustc_hash::FxHashMap;
-use scraper::ElementRef;
-use std::sync::OnceLock;
-use std::time::Duration;
-use tokio::time::sleep;
-
-const MAX_RETRIES: usize = 3;
+mod benchmarks;
+mod languish;
+mod pypl;
+mod techempower;
+mod tiobe;
 
 mod raw_entry {
     use super::CanonicalLanguage;
@@ -55,7 +56,7 @@ mod raw_entry {
     }
 }
 
-use raw_entry::RawEntry;
+const MAX_RETRIES: usize = 3;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 struct CanonicalLanguage(String);
@@ -75,49 +76,6 @@ struct AggregatedEntry {
     min_rank: Option<u32>,
     share_sum: f64,
     trend_sum: Option<f64>,
-}
-
-async fn fetch_text_with_retry(client: &Client, url: &str) -> Result<String> {
-    send_with_retry(client, url)
-        .await?
-        .text()
-        .await
-        .with_context(|| format!("failed to read response body from {url}"))
-}
-
-async fn fetch_bytes_with_retry(client: &Client, url: &str) -> Result<Vec<u8>> {
-    let bytes = send_with_retry(client, url)
-        .await?
-        .bytes()
-        .await
-        .with_context(|| format!("failed to read response body from {url}"))?;
-    Ok(bytes.to_vec())
-}
-
-async fn send_with_retry(client: &Client, url: &str) -> Result<Response> {
-    let mut last_err: Option<anyhow::Error> = None;
-    for attempt in 1..=MAX_RETRIES {
-        match client
-            .get(url)
-            .send()
-            .await
-            .and_then(Response::error_for_status)
-        {
-            Ok(response) => return Ok(response),
-            Err(err) => last_err = Some(err.into()),
-        }
-
-        if attempt < MAX_RETRIES {
-            sleep(calculate_backoff(attempt)).await;
-        }
-    }
-
-    let detail = last_err
-        .as_ref()
-        .map_or_else(|| "unknown error".to_string(), describe_error);
-    Err(anyhow!(
-        "failed to fetch {url} after {MAX_RETRIES} attempts: {detail}"
-    ))
 }
 
 fn calculate_backoff(attempt: usize) -> Duration {
@@ -324,6 +282,49 @@ fn canonical_aliases() -> &'static FxHashMap<&'static str, &'static str> {
         .into_iter()
         .collect()
     })
+}
+
+async fn fetch_text_with_retry(client: &Client, url: &str) -> Result<String> {
+    send_with_retry(client, url)
+        .await?
+        .text()
+        .await
+        .with_context(|| format!("failed to read response body from {url}"))
+}
+
+async fn fetch_bytes_with_retry(client: &Client, url: &str) -> Result<Vec<u8>> {
+    let bytes = send_with_retry(client, url)
+        .await?
+        .bytes()
+        .await
+        .with_context(|| format!("failed to read response body from {url}"))?;
+    Ok(bytes.to_vec())
+}
+
+async fn send_with_retry(client: &Client, url: &str) -> Result<Response> {
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 1..=MAX_RETRIES {
+        match client
+            .get(url)
+            .send()
+            .await
+            .and_then(Response::error_for_status)
+        {
+            Ok(response) => return Ok(response),
+            Err(err) => last_err = Some(err.into()),
+        }
+
+        if attempt < MAX_RETRIES {
+            sleep(calculate_backoff(attempt)).await;
+        }
+    }
+
+    let detail = last_err
+        .as_ref()
+        .map_or_else(|| "unknown error".to_string(), describe_error);
+    Err(anyhow!(
+        "failed to fetch {url} after {MAX_RETRIES} attempts: {detail}"
+    ))
 }
 
 #[cfg(test)]
