@@ -38,10 +38,34 @@ pub async fn save_html_report(
     if minify_html {
         let cfg = Cfg::new();
         let minified = minify(html.as_bytes(), &cfg);
-        write_output_file(output_path, &minified).await
+        write_output_file(output_path, &minified).await?;
     } else {
-        write_output_file(output_path, html.as_bytes()).await
+        write_output_file(output_path, html.as_bytes()).await?;
     }
+
+    let output_dir = output_path.parent().unwrap_or_else(|| Path::new(""));
+    let sitemap = render_sitemap(context.run_started_at);
+    let robots = render_robots();
+    write_output_file(&output_dir.join(SITEMAP_FILE_NAME), sitemap.as_bytes()).await?;
+    write_output_file(&output_dir.join(ROBOTS_FILE_NAME), robots.as_bytes()).await
+}
+
+fn render_sitemap(generated_at: &DateTime<Local>) -> String {
+    let last_modified = generated_at.format("%Y-%m-%d");
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>{REPORT_URL}</loc>
+    <lastmod>{last_modified}</lastmod>
+  </url>
+</urlset>
+"#
+    )
+}
+
+fn render_robots() -> String {
+    format!("User-agent: *\nAllow: /\n\nSitemap: {REPORT_URL}{SITEMAP_FILE_NAME}\n")
 }
 
 #[allow(clippy::too_many_lines)]
@@ -477,6 +501,8 @@ const CDN_FONTS_GOOGLEAPIS: &str = "https://fonts.googleapis.com";
 const CDN_FONTS_GSTATIC: &str = "https://fonts.gstatic.com";
 const CDN_FONTS_STYLESHEET: &str = "https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@400;500;600&display=swap";
 const REPORT_URL: &str = "https://langrank.hexq.ru/";
+const SITEMAP_FILE_NAME: &str = "sitemap.xml";
+const ROBOTS_FILE_NAME: &str = "robots.txt";
 const REPORT_DESCRIPTION: &str = "LangRank report ranks programming languages using the Schulze method, blending popularity and performance data from major indexes.";
 const REPORT_KEYWORDS: &str = "programming languages, ranking, Schulze method, TIOBE, PYPL, Languish, Benchmarks Game, TechEmpower, performance metrics";
 const REPORT_FAVICON: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23f6f3ec'/%3E%3Ccircle cx='32' cy='32' r='20' fill='%23e07a5f'/%3E%3Ctext x='32' y='38' text-anchor='middle' font-family='sans-serif' font-size='20' fill='%23ffffff'%3ELR%3C/text%3E%3C/svg%3E";
@@ -486,3 +512,32 @@ const THEME_BOOTSTRAP_SCRIPT: &str = include_str!("report/theme-bootstrap.js");
 const REPORT_SCRIPT: &str = include_str!("report/script.js");
 
 const GITHUB_SVG: &str = r#"<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.53 2.87 8.38 6.84 9.74.5.1.68-.22.68-.48 0-.24-.01-.86-.01-1.7-2.78.62-3.37-1.38-3.37-1.38-.45-1.18-1.1-1.5-1.1-1.5-.9-.64.07-.63.07-.63 1 .07 1.52 1.05 1.52 1.05.9 1.57 2.36 1.12 2.94.86.09-.67.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.04 1.03-2.76-.1-.26-.45-1.3.1-2.72 0 0 .84-.27 2.75 1.03a9.28 9.28 0 0 1 2.5-.35c.85 0 1.7.12 2.5.35 1.9-1.3 2.74-1.03 2.74-1.03.56 1.42.2 2.46.1 2.72.64.72 1.03 1.64 1.03 2.76 0 3.94-2.34 4.8-4.57 5.06.36.32.68.95.68 1.92 0 1.38-.01 2.49-.01 2.83 0 .26.18.58.69.48A10.07 10.07 0 0 0 22 12.26C22 6.58 17.52 2 12 2z"/></svg>"#;
+
+#[cfg(test)]
+mod tests {
+    use super::{REPORT_URL, render_robots, render_sitemap};
+    use chrono::{Local, TimeZone};
+
+    #[test]
+    fn sitemap_contains_canonical_url_and_generation_date() {
+        let generated_at = Local
+            .with_ymd_and_hms(2026, 9, 18, 12, 0, 0)
+            .single()
+            .expect("test date must be valid");
+
+        let sitemap = render_sitemap(&generated_at);
+
+        assert!(sitemap.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+        assert!(sitemap.contains("xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\""));
+        assert!(sitemap.contains(&format!("<loc>{REPORT_URL}</loc>")));
+        assert!(sitemap.contains("<lastmod>2026-09-18</lastmod>"));
+    }
+
+    #[test]
+    fn robots_allows_crawling_and_points_to_sitemap() {
+        assert_eq!(
+            render_robots(),
+            "User-agent: *\nAllow: /\n\nSitemap: https://langrank.hexq.ru/sitemap.xml\n"
+        );
+    }
+}

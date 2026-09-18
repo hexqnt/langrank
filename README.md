@@ -97,7 +97,8 @@ langrank --save-rankings --save-schulze --archive-csv
 ```
 
 HTML is minified by default. Use `--no-minify-html` when you need readable HTML
-source.
+source. Saving an HTML report also creates `sitemap.xml` and `robots.txt` in the
+same directory.
 
 ### Shell completions
 
