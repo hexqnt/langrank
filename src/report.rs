@@ -4,7 +4,7 @@ use crate::formatting::{
 use crate::schulze::SchulzeRecord;
 use crate::write_output_file;
 use anyhow::Result;
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, SecondsFormat};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use minify_html::{Cfg, minify};
 use std::path::Path;
@@ -70,10 +70,13 @@ fn render_robots() -> String {
 
 #[allow(clippy::too_many_lines)]
 fn render_html_report(context: &HtmlReportContext<'_>) -> String {
-    let generated_at = context
+    let generated_at_fallback = context
         .run_started_at
         .format("%Y-%m-%d %H:%M:%S %Z")
         .to_string();
+    let generated_at = context
+        .run_started_at
+        .to_rfc3339_opts(SecondsFormat::Secs, true);
     let total = context.schulze_records.len();
     let top_n = total.min(10);
     let showing = if context.full_output {
@@ -171,7 +174,12 @@ fn render_html_report(context: &HtmlReportContext<'_>) -> String {
                         div class="meta" {
                             div {
                                 span class="label" { "Generated" }
-                                span class="value mono" { (generated_at) }
+                                time
+                                    class="value mono"
+                                    datetime=(generated_at)
+                                    data-generated-at {
+                                        (generated_at_fallback)
+                                }
                             }
                             div {
                                 span class="label" { "Coverage" }

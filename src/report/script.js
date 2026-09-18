@@ -19,6 +19,21 @@
 		document.documentElement.dataset.theme === "dark" ? "dark" : "light";
 	setThemeToggleState(currentTheme);
 
+	const generatedAt = document.querySelector("[data-generated-at]");
+	if (generatedAt instanceof HTMLTimeElement) {
+		const date = new Date(generatedAt.dateTime);
+		if (!Number.isNaN(date.getTime())) {
+			try {
+				generatedAt.textContent = new Intl.DateTimeFormat(undefined, {
+					dateStyle: "medium",
+					timeStyle: "long",
+				}).format(date);
+			} catch (_) {
+				generatedAt.textContent = date.toLocaleString();
+			}
+		}
+	}
+
 	if (themeToggle) {
 		themeToggle.addEventListener("click", () => {
 			const nextTheme =
