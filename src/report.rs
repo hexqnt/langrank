@@ -58,6 +58,8 @@ fn render_sitemap(generated_at: &DateTime<Local>) -> String {
   <url>
     <loc>{REPORT_URL}</loc>
     <lastmod>{last_modified}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>1.0</priority>
   </url>
 </urlset>
 "#
