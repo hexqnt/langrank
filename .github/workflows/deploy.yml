@@ -15,18 +15,21 @@ jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Download latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p bin
+          gh release download \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "langrank-linux-x86_64-gnu.tar.gz" \
+            --dir bin
+          tar -xzf bin/langrank-linux-x86_64-gnu.tar.gz -C bin
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@nightly
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build report
+      - name: Generate report
         run: |
           rm -rf dist
-          cargo run --locked --release -- \
+          ./bin/langrank \
             --save-html dist/index.html \
             --save-rankings dist/rankings.csv \
             --save-schulze dist/schulze_rankings.csv \
