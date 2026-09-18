@@ -1,13 +1,11 @@
-use std::sync::OnceLock;
-
-use anyhow::{Context, Result, anyhow};
-use reqwest::Client;
-use scraper::{Html, Selector};
-
-use crate::RankingEntry;
 use super::{
     RawEntry, aggregate_entries, extract_cell_text, fetch_text_with_retry, parse_percent, parse_u32,
 };
+use crate::RankingEntry;
+use anyhow::{Context, Result, anyhow};
+use reqwest::Client;
+use scraper::{Html, Selector};
+use std::sync::OnceLock;
 
 const PYPL_URL: &str = "https://pypl.github.io/PYPL.html";
 

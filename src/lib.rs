@@ -31,4 +31,3 @@ mod fetcher;
 mod parsing;
 mod ranking;
 mod sources;
-

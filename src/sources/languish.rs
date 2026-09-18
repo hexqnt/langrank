@@ -1,5 +1,5 @@
-use std::sync::OnceLock;
-
+use super::{RawEntry, aggregate_entries, fetch_text_with_retry};
+use crate::RankingEntry;
 use anyhow::{Context, Result, anyhow};
 use memchr::memchr;
 use reqwest::Client;
@@ -7,9 +7,7 @@ use rustc_hash::FxHashMap;
 use scraper::{Html, Selector};
 use serde::Deserialize;
 use serde_json::Value;
-
-use crate::RankingEntry;
-use super::{RawEntry, aggregate_entries, fetch_text_with_retry};
+use std::sync::OnceLock;
 
 const LANGUISH_INDEX_URL: &str = "https://tjpalmer.github.io/languish/";
 
